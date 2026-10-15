@@ -11,8 +11,11 @@ is asynchronous, and nothing touches the network.
 
 This README grows into the full shape shared by the sibling libraries
 (requirements, an offline quick start, going live, scenarios, pure helpers, the error
-taxonomy, features, settings, documentation and layout) as the surface is built; for
-now the library exposes its version marker only.
+taxonomy, features, settings, documentation and layout) as the surface is built. The
+query side is in place: `format` renders `SELECT` statements (with `DISTINCT`, `FROM`,
+joins, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` / `OFFSET`, `UNION`, `WITH`
+and locking clauses) and the expression operators, `raw` splices verbatim SQL, and
+`{:inline true}` renders every value as a literal for consoles and debugging.
 
 ## Requirements
 
@@ -76,7 +79,8 @@ library does not enforce, will be tabled here.
 src/sql_cljs/
   core.cljs         format engine, `format`, `raw`, `api-version`
   helpers.cljs      builder functions producing plain composable data (to come)
-  util.cljs         shared helpers (to come)
+  util.cljs         engine internals: the error constructor, the entity validator,
+                    the raw fragment type, the inline literal renderer
 dev/sql_cljs/
   dev.cljs          node-script entry point for a REPL
   examples.cljs     every example of the README
@@ -87,8 +91,12 @@ test/sql_cljs/      mirrors src; run-tests.sh + test/publicity_gate.sh
 
 ## Public API index
 
-`sql-cljs.core/api-version`: the version marker, `"0.1.0"`. The full index follows
-the surface.
+- `sql-cljs.core/format`: `(format query)` or `(format query {:inline true})`, a
+  statement map in, `{:text "SELECT ..." :values [...]}` out.
+- `sql-cljs.core/raw`: `(raw "NOW()")`, a SQL fragment spliced verbatim.
+- `sql-cljs.core/api-version`: the version marker, `"0.1.0"`.
+
+The full index follows the surface.
 
 ## Development
 
