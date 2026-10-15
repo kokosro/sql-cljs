@@ -47,7 +47,7 @@
       (is (= :sql-cljs/format-error (:type d)))
       (is (= :format (:op d)))
       (is (= :pretty (:arg d)))
-      (is (= [:inline] (:allowed d)))))
+      (is (= [:dialect :inline] (:allowed d)))))
   (testing ":inline must be a boolean"
     (let [d (thrown-data #(sql/format {:select [:a]} {:inline "yes"}))]
       (is (= :format (:op d)))

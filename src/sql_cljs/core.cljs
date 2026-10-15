@@ -1,6 +1,6 @@
 (ns sql-cljs.core
-  "The sql-cljs query builder for PostgreSQL: plain ClojureScript data in, a
-   parameterized SQL query out. A statement is a map of clauses
+  "The sql-cljs query builder for PostgreSQL and SQLite: plain ClojureScript
+   data in, a parameterized SQL query out. A statement is a map of clauses
    ({:select [:a :b] :from [:foo] :where [:= :foo.a \"baz\"]}), an expression
    is a vector whose first element is the operator or function, keywords and
    symbols name tables and columns, and strings are always values. `format`
@@ -8,6 +8,16 @@
    :values [\"baz\"]}, the exact shape pg-cljs.core/query! takes, with the
    values passed through untouched. The library is pure formatting: no JS
    interop, no runtime npm dependency, no network.
+
+   The dialect is a format option: {:dialect :pg} (the default) renders
+   PostgreSQL, {:dialect :sqlite} renders SQLite, the same statement maps
+   in. Under :sqlite every value is a ? placeholder (one per :values entry,
+   in order of appearance; the pair {:sql (:text s) :params (:values s)} is
+   what sqlite-cljs takes), and the clauses SQLite has no spelling for are
+   format-errors rather than text: the dialect never degrades silently.
+   Every such difference is named in the clause list below (\"under
+   :sqlite\"); everything not named renders identically in both dialects,
+   the entity rule included.
 
    The shapes, by clause (every clause is optional except the statement
    head, and the map's key order never matters; the text follows the
@@ -18,7 +28,8 @@
      [expr :alias] (always rendered with AS), a function call nested as
      [[:count :*]] or [[:count :*] :total], a statement map (a scalar
      subquery). :distinct true adds DISTINCT, :distinct-on [:a :b] adds
-     DISTINCT ON (a, b).
+     DISTINCT ON (a, b) (under :sqlite :distinct-on is a format-error:
+     SQLite has no DISTINCT ON).
    - :from, a vector of :t, [:t :alias], {subquery}, [{subquery} :alias].
    - :join / :inner-join (INNER JOIN), :left-join, :right-join, :full-join:
      a flat vector of table then condition pairs, [:bar [:= :foo.id :bar.foo_id]
@@ -29,14 +40,22 @@
    - :group-by, a vector of expressions. :order-by, a vector of :a or
      [expr :asc|:desc :nulls-first|:nulls-last].
    - :limit (a number or :all) and :offset (a number); the number travels as
-     a parameter.
+     a parameter. Under :sqlite :limit :all is LIMIT -1 (SQLite has no
+     LIMIT ALL; a negative limit means no bound) and an :offset without
+     :limit renders LIMIT -1 OFFSET ? (SQLite's OFFSET needs a LIMIT).
    - :union / :union-all, a vector of statement maps, each operand
      parenthesized: (SELECT ...) UNION (SELECT ...); :order-by, :limit and
-     :offset next to it apply to the whole.
+     :offset next to it apply to the whole. Under :sqlite the operands are
+     bare, SELECT ... UNION SELECT ... (grouped left to right), and an
+     operand carrying :with, :order-by, :limit, :offset or :for is a
+     format-error (SQLite's compound operands are plain select cores).
    - :with / :with-recursive, a vector of [:name {statement}] or
-     [[:name :col ...] {statement}].
+     [[:name :col ...] {statement}]. Under :sqlite a body that is an
+     :insert-into, :update or :delete-from statement is a format-error
+     (SQLite's CTE bodies are select statements).
    - :for, :update or [:update :t1 :t2 :nowait]; strengths :update,
      :no-key-update, :share, :key-share; options :nowait or :skip-locked.
+     Under :sqlite :for is a format-error (no row-locking clause exists).
 
    Data modification, one head per statement (:with applies to all three
    of INSERT, UPDATE and DELETE):
@@ -46,23 +65,31 @@
      \"y\"]], or maps, [{:a 1 :b \"x\"}], whose keys become the column list
      (the first map's order, or the :columns order) and must be the same in
      every row. :default in a value slot is the DEFAULT key word in both
-     modes. A statement map as :values is INSERT ... SELECT.
+     modes (under :sqlite a format-error: SQLite has no DEFAULT key word
+     in VALUES or SET, so the column is left out or the value written). A
+     statement map as :values is INSERT ... SELECT.
    - :on-conflict, a map: the target, :on-columns [:id] (a column or an
      index expression vector, [:lower :email]) with an optional :index-where
-     predicate, or :on-constraint :name, or neither (DO NOTHING only); the
-     action, :do-nothing true or :do-update-set (a map or a vector of pairs
-     like :set, :excluded/col naming the proposed row) with an optional
-     :where condition.
+     predicate, or :on-constraint :name, or neither (DO NOTHING, or DO
+     UPDATE SET, which PostgreSQL rejects at execution and SQLite accepts
+     as its catch-all upsert); the action, :do-nothing true or
+     :do-update-set (a map or a vector of pairs like :set, :excluded/col
+     naming the proposed row) with an optional :where condition. Under
+     :sqlite :on-constraint is a format-error (no ON CONSTRAINT target),
+     and an INSERT ... SELECT with :on-conflict needs a :where in the select
+     (SQLite's parser otherwise reads ON as a join constraint).
    - :returning, the same items as :select: :id, [:*], [[:lower :name] :n].
    - :update :t or [:t :alias] with :set, a map {:a 1 :b :c} or a vector of
      [column expression] pairs (the vector keeps the order past eight
      assignments); columns are never table-qualified; :default assigns the
      default. Then :from (as in SELECT), :where, :returning.
    - :delete-from :t or [:t :alias], then :using (a FROM list), :where,
-     :returning.
+     :returning. Under :sqlite :using is a format-error (SQLite's DELETE
+     has no USING; the other table goes in a :where subquery).
    - :truncate :t or [:t :u], always TRUNCATE TABLE, with the flags
      :restart-identity / :continue-identity and :cascade / :restrict, each
-     true or false.
+     true or false. Under :sqlite :truncate is a format-error (no TRUNCATE
+     statement; DELETE FROM t without :where empties a table).
 
    Data definition, one head per statement. DDL takes no parameters, so
    every literal in it (a DEFAULT, a CHECK constant, a partial-index
@@ -82,29 +109,45 @@
      else (array types, (raw \"text[]\")); a string is a value, never a
      type. Column constraints, in the order written: :not-null, :null,
      :unique, :primary-key, [:default expr] (an operator expression is
-     parenthesized), [:check expr] (always parenthesized), [:references
+     parenthesized; under :sqlite a function call too, DEFAULT
+     (LOWER(name)), as SQLite requires of a non-literal default),
+     [:check expr] (always parenthesized), [:references
      :t & cols], then [:on-delete action] / [:on-update action] (actions
      :no-action, :restrict, :cascade, :set-null, :set-default),
      [:constraint :name constraint], or raw. :constraints, a vector of
      table constraints: [:primary-key :a :b], [:unique :a], [:check expr],
      [:foreign-key [:a :b] [:references :t :c :d] [:on-delete :cascade]],
      [:constraint :name constraint], or raw; they follow the columns.
+     Under :sqlite the types :serial, :bigserial and :smallserial render
+     INTEGER, the column's :primary-key constraint renders PRIMARY KEY
+     AUTOINCREMENT, and a serial column without :primary-key is a
+     format-error (SQLite's spelling is INTEGER PRIMARY KEY
+     [AUTOINCREMENT]; its INTEGER is 64-bit whatever the serial width).
    - :drop-table :t or [:t :u], with :if-exists, :cascade / :restrict.
+     Under :sqlite exactly one name and :if-exists only: several names,
+     :cascade and :restrict are format-errors (the same for :drop-index
+     and :drop-view).
    - :alter-table :t with :if-exists and :actions, a vector of
      [:add-column [name type & constraints] :if-not-exists], [:drop-column
      :c :if-exists :cascade|:restrict] and [:rename-column :old :new]
      (the options after the arguments are optional); several ADD / DROP
-     actions are comma-separated, RENAME COLUMN stands alone.
+     actions are comma-separated, RENAME COLUMN stands alone. Under
+     :sqlite exactly one action per statement and no options: the
+     statement's :if-exists, :if-not-exists on :add-column and :if-exists
+     / :cascade / :restrict on :drop-column are format-errors.
    - :create-index :name (nil for an unnamed index) with :unique,
      :concurrently, :if-not-exists, :on :t, :using :gin (the method),
      :columns, a vector of :order-by items (:a, [:b :desc :nulls-last],
      [[:lower :email]]; an operator expression is parenthesized), and
-     :where, the partial-index predicate.
+     :where, the partial-index predicate. Under :sqlite the name is
+     required, and :using, :concurrently and :nulls-first / :nulls-last
+     on a column are format-errors.
    - :drop-index :i or [:i :j], with :concurrently (then exactly one name
-     and no :cascade), :if-exists, :cascade / :restrict.
+     and no :cascade), :if-exists, :cascade / :restrict. Under :sqlite
+     one name and :if-exists only (:concurrently is a format-error too).
    - :create-view :v with :or-replace, :columns [:a :b] (the view's column
      names) and :as, the body: a statement map, rendered without
-     parentheses, or raw.
+     parentheses, or raw. Under :sqlite :or-replace is a format-error.
    - :drop-view :v or [:v :w], with :if-exists, :cascade / :restrict.
 
    Expressions: [:= a b] [:not= a b] (<>) [:<> a b] [:< a b] [:> a b]
@@ -116,7 +159,13 @@
    lettered keyword is a function call ([:coalesce :a 0] is COALESCE(a, $1),
    [:now] is NOW()), [:raw \"...\"] or (raw \"...\") splices SQL verbatim.
    Every nested operator expression is parenthesized, so precedence is
-   never relied on."
+   never relied on. Under :sqlite, :ilike renders LIKE and :not-ilike NOT
+   LIKE (SQLite has no ILIKE; its LIKE is case-insensitive for ASCII by
+   default, so :like is too), and the zero-argument [:current-timestamp],
+   [:current-date] and [:current-time] render the bare key words
+   CURRENT_TIMESTAMP, CURRENT_DATE and CURRENT_TIME (SQLite rejects the
+   parenthesized spelling; under :pg these hyphenated names fail the entity
+   rule as any other); every other expression renders identically."
   (:require [clojure.string :as str]
             [sql-cljs.util :as u]))
 
@@ -147,17 +196,23 @@
 (defn- context
   [opts]
   {:inline? (true? (:inline opts))
+   :dialect (get opts :dialect :pg)
    :params (volatile! [])})
 
+(defn- sqlite?
+  "True when the rendering context is the :sqlite dialect."
+  [ctx]
+  (= :sqlite (:dialect ctx)))
+
 (defn- value!
-  "The placeholder of the value v ($N, v appended to the parameters) or,
-   in inline mode, its literal."
+  "The placeholder of the value v ($N under :pg, ? under :sqlite; v appended
+   to the parameters) or, in inline mode, its literal."
   [ctx _op v]
   (if (:inline? ctx)
     (u/literal v)
     (let [params (:params ctx)]
       (vswap! params conj v)
-      (str "$" (count @params)))))
+      (if (sqlite? ctx) "?" (str "$" (count @params))))))
 
 (defn- collection-in-expression?
   "A ClojureScript collection that is neither a vector (an expression) nor
@@ -194,6 +249,30 @@
 
 (declare expression)
 
+(def ^:private sqlite-key-word-calls
+  "The zero-argument forms that are bare key words in SQLite, where
+   CURRENT_TIMESTAMP() is a syntax error: [:current-timestamp] renders
+   CURRENT_TIMESTAMP under :sqlite. Under :pg the hyphenated name fails the
+   entity rule as any other would ([:now] or raw spell the PostgreSQL
+   function)."
+  {:current-timestamp "CURRENT_TIMESTAMP" :current-date "CURRENT_DATE" :current-time "CURRENT_TIME"})
+
+(defn- key-word-call?
+  "True when form is exactly [:current-timestamp], [:current-date] or
+   [:current-time] rendered under :sqlite: a bare key word, not a call."
+  [ctx form]
+  (and (sqlite? ctx) (= 1 (count form)) (contains? sqlite-key-word-calls (kw (first form)))))
+
+(defn- function-call-form?
+  "True when x renders as a function call, NAME(...): a vector whose head is
+   a lettered keyword outside the operator table (and not :raw, not a
+   bare key word under :sqlite)."
+  [ctx x]
+  (and (vector? x) (seq x)
+       (let [k (kw (first x))]
+         (and (u/entity? k) (not= :raw k) (not (contains? operators k))
+              (not (u/operator-shaped? k)) (not (key-word-call? ctx x))))))
+
 (defn- function-call
   [ctx op k args]
   (let [fname (str/upper-case (u/entity-name op k false))
@@ -225,6 +304,9 @@
                                   "; the operators are listed under :allowed, anything else is spelled"
                                   " with the raw escape hatch")
                              {:allowed (vec (sort (keys operators)))}))
+
+      (key-word-call? ctx form)
+      (get sqlite-key-word-calls k)
 
       :else
       (function-call ctx op k (rest form)))))
@@ -269,6 +351,14 @@
     (arity! form 2)
     (let [op (first form) [a b] (rest form)]
       (str (operand ctx op a) " " sql " " (operand ctx op b)))))
+
+(defn- like-op
+  "LIKE and its negation, with the :ilike spellings per dialect: ILIKE under
+   :pg; under :sqlite LIKE, whose default matching is ASCII case-insensitive
+   (SQLite has no ILIKE)."
+  [pg-sql sqlite-sql]
+  (fn [ctx form]
+    ((binary (if (sqlite? ctx) sqlite-sql pg-sql)) ctx form)))
 
 (defn- logical
   [sql]
@@ -364,9 +454,9 @@
    :in (in-op "IN")
    :not-in (in-op "NOT IN")
    :like (binary "LIKE")
-   :ilike (binary "ILIKE")
+   :ilike (like-op "ILIKE" "LIKE")
    :not-like (binary "NOT LIKE")
-   :not-ilike (binary "NOT ILIKE")
+   :not-ilike (like-op "NOT ILIKE" "NOT LIKE")
    :between (between-op "BETWEEN")
    :not-between (between-op "NOT BETWEEN")
    :is-null (postfix "IS NULL")
@@ -486,6 +576,10 @@
   (when (and (contains? m :distinct) (contains? m :distinct-on))
     (throw (u/format-error :select (select-keys m [:distinct :distinct-on])
                            ":distinct and :distinct-on cannot both be given")))
+  (when (and (sqlite? ctx) (contains? m :distinct-on))
+    (throw (u/format-error :distinct-on (:distinct-on m)
+                           (str "SQLite has no DISTINCT ON; :distinct true (plain DISTINCT) renders, or"
+                                " rewrite with GROUP BY or a window function"))))
   (let [modifier (cond
                    (contains? m :distinct-on)
                    (str "DISTINCT ON ("
@@ -611,34 +705,63 @@
   (str "ORDER BY " (str/join ", " (mapv #(order-item ctx %) (list-of k (get m k))))))
 
 (defn- emit-count
+  "LIMIT and OFFSET. Under :sqlite, :limit :all is LIMIT -1 (a negative
+   LIMIT means no bound) and an :offset without :limit is prefixed with
+   LIMIT -1 (SQLite's OFFSET needs a LIMIT)."
   [word all?]
   (fn [ctx m k]
-    (let [v (get m k)]
+    (let [v (get m k)
+          prefix (when (and (sqlite? ctx) (= :offset k) (not (contains? m :limit))) "LIMIT -1 ")]
       (cond
-        (and all? (= :all (kw v))) (str word " ALL")
-        (u/raw? v) (str word " " (u/raw-sql v))
+        (and all? (= :all (kw v))) (if (sqlite? ctx) (str word " -1") (str word " ALL"))
+        (u/raw? v) (str prefix word " " (u/raw-sql v))
         (or (u/entity? v) (coll? v))
         (throw (u/format-error k v
                                (str (pr-str k) " takes a number" (when all? " (or :all)") ", got "
                                     (pr-str v))))
-        :else (str word " " (value! ctx k v))))))
+        :else (str prefix word " " (value! ctx k v))))))
+
+(def ^:private sqlite-operand-clauses
+  "The clauses a compound-select operand cannot carry under :sqlite, where
+   operands are bare select cores: ORDER BY, LIMIT and OFFSET belong to the
+   whole compound, WITH precedes it, and there is no locking clause."
+  [:with :with-recursive :order-by :limit :offset :for])
 
 (defn- emit-union
+  "UNION / UNION ALL. Under :pg every operand is parenthesized; under
+   :sqlite operands are bare (A UNION B UNION C, grouped left to right) and
+   an operand carrying :with, :order-by, :limit, :offset or :for is a
+   format-error."
   [word]
   (fn [ctx m k]
-    (let [operands (list-of k (get m k))]
+    (let [operands (list-of k (get m k))
+          bare? (sqlite? ctx)]
       (when (< (count operands) 2)
         (throw (u/format-error k (get m k)
                                (str (pr-str k) " needs at least two statement maps, got " (pr-str (get m k))))))
+      (when bare?
+        (doseq [q operands
+                c sqlite-operand-clauses]
+          (when (and (map? q) (contains? q c))
+            (throw (u/format-error k q
+                                   (str "SQLite's compound-select operands are bare select cores and cannot"
+                                        " carry " (pr-str c) "; " (pr-str c) " next to " (pr-str k)
+                                        " applies to the whole compound (the clauses an operand cannot"
+                                        " carry are listed under :allowed)")
+                                   {:allowed sqlite-operand-clauses})))))
       (str/join (str " " word " ")
                 (mapv (fn [q]
                         (cond
-                          (map? q) (str "(" (statement ctx q) ")")
-                          (u/raw? q) (str "(" (u/raw-sql q) ")")
+                          (map? q) (if bare? (statement ctx q) (str "(" (statement ctx q) ")"))
+                          (u/raw? q) (if bare? (u/raw-sql q) (str "(" (u/raw-sql q) ")"))
                           :else (throw (u/format-error k q
                                                        (str "every operand of " (pr-str k)
                                                             " is a statement map, got " (pr-str q))))))
                       operands)))))
+
+(def ^:private dml-heads
+  "The data-modifying statement heads."
+  [:insert-into :update :delete-from])
 
 (defn- cte
   [ctx k item]
@@ -649,6 +772,13 @@
                                 " takes a vector of them: [[:t {:select ...}]]; got " (pr-str item)))))
   (let [[head body] item
         [nm & cols] (if (vector? head) head [head])
+        _ (when (and (sqlite? ctx) (map? body))
+            (doseq [h dml-heads]
+              (when (contains? body h)
+                (throw (u/format-error k body
+                                       (str "SQLite's common table expressions are select statements: a"
+                                            " body with " (pr-str h) " (data-modifying CTE) has no"
+                                            " SQLite spelling; run the modification as its own statement"))))))
         name-text (u/entity-name k nm false)
         cols-text (when (seq cols)
                     (str "(" (str/join ", " (mapv #(u/entity-name k % false) cols)) ")"))
@@ -672,6 +802,10 @@
 
 (defn- emit-for
   [ctx m k]
+  (when (sqlite? ctx)
+    (throw (u/format-error k (get m k)
+                           (str "SQLite has no row-locking clause (no FOR UPDATE / FOR SHARE): locking"
+                                " is per database file, through transactions; drop :for"))))
   (let [v (get m k)
         [strength & more] (cond
                             (u/entity? v) [v]
@@ -731,10 +865,16 @@
 
 (defn- value-or-default
   "An element of a VALUES row or the right-hand side of an assignment:
-   :default is the DEFAULT key word (in both modes), anything else an
-   expression."
+   :default is the DEFAULT key word (in both modes) under :pg and a
+   format-error under :sqlite, anything else an expression."
   [ctx op x]
-  (if (default? x) "DEFAULT" (expression ctx op x)))
+  (cond
+    (not (default? x)) (expression ctx op x)
+    (sqlite? ctx)
+    (throw (u/format-error op x
+                           (str "SQLite has no DEFAULT key word in VALUES or SET; drop the column from"
+                                " the statement (its default applies) or write the value itself")))
+    :else "DEFAULT"))
 
 (defn- assignment-column
   "The column of a SET assignment: a plain, never table-qualified, entity."
@@ -905,6 +1045,16 @@
       (when (and (contains? c :where) (not update?))
         (throw (u/format-error k (:where c)
                                ":where in :on-conflict is the condition of DO UPDATE and needs :do-update-set")))
+      (when (sqlite? ctx)
+        (when (contains? c :on-constraint)
+          (throw (u/format-error k (:on-constraint c)
+                                 (str "SQLite has no ON CONSTRAINT conflict target; name the indexed"
+                                      " columns with :on-columns instead"))))
+        (when (and (map? (:values m)) (not (contains? (:values m) :where)))
+          (throw (u/format-error k (:values m)
+                                 (str "SQLite cannot parse an upsert after INSERT ... SELECT unless the"
+                                      " SELECT has a WHERE clause (ON would read as a join constraint);"
+                                      " add :where to the select, [:= true true] at the least")))))
       (str "ON CONFLICT"
            (when (contains? c :on-columns)
              (str " ("
@@ -940,12 +1090,21 @@
 
 (defn- emit-using
   [ctx m k]
+  (when (sqlite? ctx)
+    (throw (u/format-error k (get m k)
+                           (str "SQLite's DELETE has no USING clause; write the other table as a"
+                                " subquery in :where, [:in :id {:select ...}] or [:exists {...}]"))))
   (str "USING " (str/join ", " (mapv #(table-ref ctx k %) (list-of k (get m k))))))
 
 ;; TRUNCATE
 
 (defn- emit-truncate
-  [_ctx m k]
+  [ctx m k]
+  (when (sqlite? ctx)
+    (throw (u/format-error k (get m k)
+                           (str "SQLite has no TRUNCATE statement; DELETE FROM t without :where empties"
+                                " the table (and resets nothing: the sqlite_sequence row is the"
+                                " caller's to clear)"))))
   (when (and (flag m :restart-identity) (flag m :continue-identity))
     (throw (u/format-error k (select-keys m [:restart-identity :continue-identity])
                            ":restart-identity and :continue-identity cannot both be true")))
@@ -1076,11 +1235,15 @@
 
 (defn- default-constraint
   "[:default expression] -> DEFAULT literal; an operator expression is
-   parenthesized, DEFAULT (1 + 2), as an operand is."
+   parenthesized, DEFAULT (1 + 2), as an operand is. Under :sqlite a
+   function call is parenthesized too, DEFAULT (LOWER(name)), as SQLite's
+   grammar requires of any non-literal default."
   [ctx op x]
   (when-not (= 2 (count x))
     (throw (u/format-error op x (str "[:default expression] takes exactly one expression, got " (pr-str x)))))
-  (str "DEFAULT " (operand ctx op (second x))))
+  (let [e (second x)
+        text (operand ctx op e)]
+    (str "DEFAULT " (if (and (sqlite? ctx) (function-call-form? ctx e)) (str "(" text ")") text))))
 
 (defn- check-constraint
   "[:check expression] -> CHECK (expression), always parenthesized."
@@ -1152,9 +1315,22 @@
                                 " a vector ([:default 0], [:check [:> :a 0]], [:references :t :id])"
                                 " or a raw fragment, got " (pr-str x))))))
 
+(def ^:private serial-types #{:serial :bigserial :smallserial})
+
+(defn- primary-key-constraint?
+  "True when the column constraint c is :primary-key or [:constraint name
+   :primary-key]."
+  [c]
+  (or (= :primary-key (kw c))
+      (and (vector? c) (= 3 (count c)) (= :constraint (kw (first c))) (= :primary-key (kw (nth c 2))))))
+
 (defn- column-definition
   "[name type & constraints] -> name TYPE constraint ..., the constraints in
-   the order written; a referential action follows its [:references ...]."
+   the order written; a referential action follows its [:references ...].
+   Under :sqlite the types :serial, :bigserial and :smallserial render
+   INTEGER, the column's PRIMARY KEY constraint is followed by AUTOINCREMENT,
+   and a serial column without :primary-key is a format-error (SQLite's
+   spelling of a sequence column is INTEGER PRIMARY KEY AUTOINCREMENT)."
   [ctx op x]
   (when-not (and (vector? x) (<= 2 (count x)))
     (throw (u/format-error op x
@@ -1162,7 +1338,8 @@
                                 " [:id :serial :primary-key] or [:name [:varchar 40] :not-null]; got "
                                 (pr-str x)))))
   (let [[nm t & cs] x
-        head [(plain-name op nm) (type-name op t)]
+        serial? (and (sqlite? ctx) (u/entity? t) (contains? serial-types (kw t)))
+        head [(plain-name op nm) (if serial? "INTEGER" (type-name op t))]
         [texts _] (reduce (fn [[acc prev] c]
                             (when (and (action-form? c)
                                        (not (or (references-form? prev) (action-form? prev)
@@ -1173,9 +1350,18 @@
                                                           " constraint it belongs to, as in"
                                                           " [:did :integer [:references :d :id]"
                                                           " [:on-delete :cascade]]"))))
-                            [(conj acc (column-constraint ctx op c)) c])
+                            [(conj acc (str (column-constraint ctx op c)
+                                            (when (and serial? (primary-key-constraint? c)) " AUTOINCREMENT")))
+                             c])
                           [head nil]
                           cs)]
+    (when (and serial? (not (some primary-key-constraint? cs)))
+      (throw (u/format-error op x
+                             (str "SQLite has no " (str/upper-case (name (kw t))) " type; its spelling of an"
+                                  " auto-assigned key is INTEGER PRIMARY KEY [AUTOINCREMENT]: write"
+                                  " [" (pr-str nm) " :integer :primary-key] (or add :primary-key to the"
+                                  " " (pr-str t) " column, which then renders INTEGER PRIMARY KEY"
+                                  " AUTOINCREMENT)"))))
     (str/join " " texts)))
 
 (def ^:private table-constraint-heads
@@ -1260,10 +1446,28 @@
     :else nil))
 
 (defn- emit-drop
+  "DROP TABLE / INDEX / VIEW. Under :sqlite exactly one name, IF EXISTS
+   only: several names, :concurrently, :cascade and :restrict are
+   format-errors."
   [word]
-  (fn [_ctx m k]
+  (fn [ctx m k]
     (let [names (list-of k (get m k))
           concurrently? (flag m :concurrently)]
+      (when (sqlite? ctx)
+        (when (< 1 (count names))
+          (throw (u/format-error k (get m k)
+                                 (str "SQLite's DROP " word " drops exactly one " (str/lower-case word)
+                                      " per statement, got " (pr-str (get m k))
+                                      "; format one statement per name"))))
+        (when concurrently?
+          (throw (u/format-error :concurrently (:concurrently m)
+                                 (str "SQLite has no DROP " word " CONCURRENTLY; drop :concurrently"))))
+        (doseq [f [:cascade :restrict]]
+          (when (flag m f)
+            (throw (u/format-error f (get m f)
+                                   (str "SQLite's DROP " word " has no CASCADE / RESTRICT (dependent objects"
+                                        " are never dropped along; foreign keys are checked per the"
+                                        " foreign_keys pragma); drop " (pr-str f)))))))
       (when concurrently?
         (when (flag m :cascade)
           (throw (u/format-error k (select-keys m [:concurrently :cascade])
@@ -1312,6 +1516,8 @@
       (do (when (< (count x) 2)
             (throw (u/format-error a x "[:add-column [name type & constraints] & options] needs the column definition")))
           (let [flags (action-flags a x (nnext x) [:if-not-exists])]
+            (when (and (sqlite? ctx) (:if-not-exists flags))
+              (throw (u/format-error a x "SQLite's ADD COLUMN has no IF NOT EXISTS; drop the option")))
             (str "ADD COLUMN " (when (:if-not-exists flags) "IF NOT EXISTS ")
                  (column-definition ctx a (second x)))))
 
@@ -1321,6 +1527,12 @@
           (let [flags (action-flags a x (nnext x) [:if-exists :cascade :restrict])]
             (when (and (:cascade flags) (:restrict flags))
               (throw (u/format-error a x ":cascade and :restrict cannot both be given")))
+            (when (sqlite? ctx)
+              (doseq [f [:if-exists :cascade :restrict]]
+                (when (contains? flags f)
+                  (throw (u/format-error a x
+                                         (str "SQLite's DROP COLUMN has no IF EXISTS, CASCADE or RESTRICT;"
+                                              " drop " (pr-str f)))))))
             (str "DROP COLUMN " (when (:if-exists flags) "IF EXISTS ")
                  (plain-name a (second x))
                  (when (:cascade flags) " CASCADE")
@@ -1343,6 +1555,14 @@
     (when (and rename? (< 1 (count actions)))
       (throw (u/format-error :actions (:actions m)
                              "RENAME COLUMN is a form of its own and cannot be combined with other actions")))
+    (when (sqlite? ctx)
+      (when (< 1 (count actions))
+        (throw (u/format-error :actions (:actions m)
+                               (str "SQLite's ALTER TABLE takes exactly one action per statement, got "
+                                    (count actions) "; format one statement per action"))))
+      (when (flag m :if-exists)
+        (throw (u/format-error :if-exists (:if-exists m)
+                               "SQLite's ALTER TABLE has no IF EXISTS; drop :if-exists"))))
     (str "ALTER TABLE " (when (flag m :if-exists) "IF EXISTS ")
          (target-base k (get m k)) " "
          (str/join ", " (mapv #(alter-action ctx :actions %) actions)))))
@@ -1363,14 +1583,21 @@
 (defn- index-column
   "An item of the CREATE INDEX column list: an :order-by item whose
    expression is a column, an expression vector or a raw fragment, never a
-   value."
+   value. Under :sqlite :nulls-first / :nulls-last are format-errors
+   (SQLite's indexed-column has no NULLS ordering)."
   [ctx x]
   (let [e (if (and (vector? x) (seq x)) (first x) x)]
     (when-not (or (u/entity? e) (u/raw? e) (vector? e))
       (throw (u/format-error :columns e
                              (str "an index column is a column name, an expression vector"
                                   " ([[:lower :email]]) or a raw fragment, got " (pr-str e)
-                                  (when (string? e) " (strings are values, never names)"))))))
+                                  (when (string? e) " (strings are values, never names)")))))
+    (when (and (sqlite? ctx) (vector? x))
+      (doseq [md (rest x)]
+        (when (contains? nulls-orders (kw md))
+          (throw (u/format-error :columns x
+                                 (str "SQLite's index columns have no NULLS FIRST / NULLS LAST (NULLs sort"
+                                      " first in ASC, last in DESC); drop " (pr-str md))))))))
   (order-item ctx :columns x true))
 
 (defn- emit-create-index
@@ -1378,6 +1605,15 @@
   (let [nm (get m k)]
     (when (and (nil? nm) (flag m :if-not-exists))
       (throw (u/format-error k m "CREATE INDEX IF NOT EXISTS needs an index name; an unnamed index (:create-index nil) cannot be conditional")))
+    (when (sqlite? ctx)
+      (when (nil? nm)
+        (throw (u/format-error k m "SQLite's CREATE INDEX needs an index name; an unnamed index (:create-index nil) has no SQLite spelling")))
+      (when (contains? m :using)
+        (throw (u/format-error :using (:using m)
+                               "SQLite has no index method (no USING btree / gin / ...): every index is a b-tree; drop :using")))
+      (when (flag m :concurrently)
+        (throw (u/format-error :concurrently (:concurrently m)
+                               "SQLite has no CREATE INDEX CONCURRENTLY; drop :concurrently"))))
     (str "CREATE " (when (flag m :unique) "UNIQUE ") "INDEX"
          (when (flag m :concurrently) " CONCURRENTLY")
          (when (flag m :if-not-exists) " IF NOT EXISTS")
@@ -1391,6 +1627,9 @@
 (defn- emit-create-view
   [ctx m k]
   (let [body (:as m)]
+    (when (and (sqlite? ctx) (flag m :or-replace))
+      (throw (u/format-error :or-replace (:or-replace m)
+                             "SQLite has no CREATE OR REPLACE VIEW; DROP VIEW IF EXISTS first, then CREATE VIEW")))
     (str "CREATE " (when (flag m :or-replace) "OR REPLACE ") "VIEW "
          (target-base k (get m k))
          (when (contains? m :columns)
@@ -1559,6 +1798,9 @@
 ;; Entry point
 ;; ---------------------------------------------------------------------------
 
+(def ^:private dialects [:pg :sqlite])
+(def ^:private format-options (vec (sort [:dialect :inline])))
+
 (defn format
   "Renders the statement map `query` to {:text \"SELECT ...\" :values [...]},
    the exact map pg-cljs.core/query! takes. :text has $1, $2, ... in order
@@ -1568,6 +1810,16 @@
    the client to encode, and a value used twice is sent twice.
 
    Options, a map or nil:
+   - :dialect, :pg (the default when the key is absent) or :sqlite. Under
+     :sqlite every placeholder is ? (one per :values entry, in order of
+     appearance; sqlite-cljs takes {:sql (:text s) :params (:values s)}),
+     LIMIT / OFFSET, compound selects, :ilike, serial columns, function-call
+     defaults and the CURRENT_* key words take their SQLite spellings, and
+     the clauses SQLite has no spelling for (:for, :distinct-on,
+     :on-constraint, :truncate, DELETE :using, :default as a value,
+     CONCURRENTLY, OR REPLACE, CASCADE / RESTRICT and multi-name drops,
+     ...) are format-errors, each named in the namespace docstring. Any
+     other value, nil included, is a format-error with :allowed.
    - :inline true renders every value as a literal in :text and returns
      :values []: strings as '...' with quotes doubled, nil as NULL, booleans
      as TRUE / FALSE, numbers and BigInts as their decimal text; NaN,
@@ -1586,11 +1838,15 @@
    (when-not (or (nil? opts) (map? opts))
      (throw (u/format-error :format opts (str "options must be a map or nil, got " (pr-str opts)))))
    (doseq [k (keys opts)]
-     (when-not (= :inline k)
-       (throw (u/format-error :format k (str "unknown option " (pr-str k)) {:allowed [:inline]}))))
+     (when-not (contains? (set format-options) k)
+       (throw (u/format-error :format k (str "unknown option " (pr-str k)) {:allowed format-options}))))
    (when-not (or (nil? (:inline opts)) (boolean? (:inline opts)))
      (throw (u/format-error :format (:inline opts)
                             (str ":inline must be true or false, got " (pr-str (:inline opts))))))
+   (when (and (contains? opts :dialect) (not (contains? (set dialects) (:dialect opts))))
+     (throw (u/format-error :format (:dialect opts)
+                            (str ":dialect is :pg or :sqlite, got " (pr-str (:dialect opts)))
+                            {:allowed dialects})))
    (when-not (map? query)
      (throw (u/format-error :format query
                             (str "format takes a statement map such as {:select [:a] :from [:t]}, got "
