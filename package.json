@@ -1,7 +1,7 @@
 {
   "name": "sql-cljs",
-  "version": "0.1.0",
-  "description": "ClojureScript (Node.js) SQL query builder for PostgreSQL: plain ClojureScript data in (maps for statements, vectors for expressions), a parameterized {:text :values} query out, ready for pg-cljs; pure formatting, no JS interop, no runtime npm dependency, no network",
+  "version": "0.2.0",
+  "description": "ClojureScript (Node.js) SQL query builder: plain ClojureScript data in (maps for statements, vectors for expressions), a parameterized {:text :values} query out - PostgreSQL by default, SQLite with {:dialect :sqlite} - ready for pg-cljs and sqlite-cljs; pure formatting, no JS interop, no runtime npm dependency, no network",
   "private": true,
   "license": "Unlicense",
   "scripts": {

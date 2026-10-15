@@ -1292,6 +1292,12 @@ without operand parentheses, and an operand carrying =:order-by= / =:limit= / =:
 must be rejected (in PostgreSQL the parentheses made it legal). The PostgreSQL dialect's
 exact strings are untouched. Live confirmation of the rejection of the parenthesized
 form is 14.4.
+[ADDED 2026-10-16 from the implementation] The operand keys the dialect rejects are
+=:with=, =:with-recursive=, =:order-by=, =:limit=, =:offset= and =:for=; a =:with= on
+the compound itself renders. Compound operands are the ONLY parentheses the dialect
+removes: =[:and ...]= / =[:or ...]= still parenthesize each operand, =WHERE (a = ?) AND
+(b IN (?, ?))=, unchanged under =:sqlite= (a manual-worthy fact: the two
+parenthesization rules are independent).
 
 ** 13.6 Locking (4.8)
 =:for= → reject under =:sqlite= (no spelling exists).
@@ -1308,9 +1314,13 @@ else in the operator table renders identically (=<>=, =AND=, =OR=, =NOT=, arithm
 unshadowable). Parameter mode is unaffected (the consumer binds booleans as 1/0).
 
 ** 13.9 DEFAULT as a value (7.1, 9.1)
-=:default= in a =VALUES= row or a =SET= assignment → reject under =:sqlite=. For a row of
-maps with a missing key (=0.1.0= renders =DEFAULT=) the same rejection, or the caller
-omits the column from =:columns=.
+=:default= in a =VALUES= row or a =SET= assignment → reject under =:sqlite= (implemented,
+=:do-update-set= included). [CORRECTED 2026-10-16 from the implementation] A row of
+maps with a missing key does NOT render =DEFAULT= in =0.1.0=, as this item first said:
+the row-of-map rule rejects any map whose key set differs from the column list and tells
+the caller to write =:default= explicitly, and both dialects raise that identical
+format-error. The missing-key case therefore never reaches the dialect; the caller
+omits the column from =:columns= (and from every row) to get the column default.
 
 ** 13.10 INSERT / UPSERT / DELETE (7, 9.2)
 =:on-constraint= → reject. =:do-update-set= without a target → allowed by the floor;
@@ -1324,9 +1334,15 @@ renders identically.
 A function-call =DEFAULT= must be parenthesized: =DEFAULT (expr)=. Candidates: (a) always
 parenthesize non-literal defaults under =:sqlite=, (b) parenthesize in both dialects
 (also legal in PostgreSQL, but it changes =0.1.0='s pinned strings). =CURRENT_TIMESTAMP=
-and friends are bare key words in SQLite; a =[:current-timestamp]= call would render
-=CURRENT_TIMESTAMP()= which is not the grammar's spelling: a spelling for the bare key
-words is needed or they go through =raw=.
+and friends are bare key words in SQLite. [CORRECTED 2026-10-16 from the
+implementation] =[:current-timestamp]= never rendered =CURRENT_TIMESTAMP()= in =0.1.0=,
+as this item first said: the hyphenated name fails the identifier rule, so the
+PostgreSQL dialect rejects it (=:arg "current-timestamp"=, =:entity
+:current-timestamp=) and still does. The bare key-word spelling exists only under
+=:sqlite=, for the zero-argument =[:current-timestamp]=, =[:current-date]= and
+=[:current-time]= (a select item, a predicate operand or a =DEFAULT=, unparenthesized
+there); =[:current_timestamp]= (underscore) is a plain call, =CURRENT_TIMESTAMP()=, in
+both dialects, and =raw= remains the other route.
 
 ** 13.12 SERIAL (10.3)
 =:serial= under =:sqlite=: (a) reject, with the message naming =INTEGER PRIMARY KEY
@@ -1367,7 +1383,9 @@ under =:sqlite= (CTE bodies are =select-stmt=).
 ** 13.18 Output text
 Unchanged conventions: upper-case key words, single spaces, no trailing semicolon, one
 statement per =format=. The =:sqlite= strings are pinned by Phase 1 tests next to the
-PostgreSQL ones.
+PostgreSQL ones. [ADDED 2026-10-16 from the implementation] Every nested operator
+operand stays parenthesized under =:sqlite= (=(a = ?) AND (b IN (?, ?))=, =NOT (c IS
+NULL)=); only compound-select operands lose their parentheses (13.5).
 
 * 14. Uncertainties (settle-later plans)
 | # | Uncertainty | Plan |
@@ -1380,6 +1398,6 @@ PostgreSQL ones.
 | 14.6 | *=INSERT INTO t AS alias=* is in the diagram (7.1) but no prose or version note describes it; whether 3.53.4 accepts the alias in a plain (non-upsert) insert was not run. | Hand-run =INSERT INTO t AS x (a) VALUES (1)=. If rejected, =:insert-into [:t :alias]= → reject under =:sqlite=. |
 | 14.7 | *=DO UPDATE= without a conflict target* is documented as allowed since 3.35.0 (7.2) but is a PostgreSQL error; the dialect decision (13.10) is open. | Phase 1 brief decides; no live check needed for the grammar fact. |
 | 14.8 | *Parameters in =CHECK= constraints*: the =DEFAULT= rule names bound parameters as non-constant (10.1) and the consumer observed =DEFAULT ?= failing, but no official sentence covers =CHECK ( ? )=. sql-cljs inlines all DDL literals, so the question never reaches the engine. | None needed unless the inlining rule changes; recorded for completeness. |
-| 14.9 | *=NOW()=.* The PostgreSQL manual's =[:now]= example renders =NOW()=, which is not a SQLite function (10.1). Whether to add =:current-timestamp= bare key-word spellings to the expression grammar (13.11) is a Phase 1 scope question. | Phase 1 brief; the SQLite date/time function page (https://sqlite.org/lang_datefunc.html) was not inventoried and would be read then. |
+| 14.9 | *=NOW()=.* The PostgreSQL manual's =[:now]= example renders =NOW()=, which is not a SQLite function (10.1). Whether to add =:current-timestamp= bare key-word spellings to the expression grammar (13.11) was a Phase 1 scope question. [CORRECTED 2026-10-16 from the implementation] Settled: under =:sqlite= the zero-argument =[:current-timestamp]= / =[:current-date]= / =[:current-time]= render the bare key words; under =:pg= they are rejected by the identifier rule as they always were (=0.1.0= never rendered =CURRENT_TIMESTAMP()= for them, contrary to what 13.11 first said; the underscore =[:current_timestamp]= is a plain call in both). =[:now]= still renders =NOW()= in both dialects; a SQLite default is written =[:default [:current-timestamp]]=. | Closed by the implementation; the date/time function page remains uninventoried (no further function is spelled by the dialect). |
 | 14.10 | *Driver behavior on =?NNN=*: the consumer's inventory reports (its =[LOCAL]=) that better-sqlite3 throws on =?NNN=; irrelevant to a =?=-only dialect but recorded because the SQLite grammar allows it (2). | No action; the dialect never emits =?NNN=. |
 | 14.11 | *No live verification happened in Phase 0* (sql-cljs has no smoke build by design; sqlite-cljs was read-only under a parallel job). Every "legal / illegal" claim above rests on the documentation and the bundled source. | The owner's hand-run composition of sqlite-cljs with sql-cljs (one in-memory database, the README's statements, one DDL round-trip) after Phase 1; findings correct this inventory IN PLACE. |

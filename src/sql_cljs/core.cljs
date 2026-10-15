@@ -172,7 +172,7 @@
 (def api-version
   "The library's own version marker, as a string. It names the version of
    the sql-cljs public surface."
-  "0.1.0")
+  "0.2.0")
 
 (defn raw
   "A fragment of SQL spliced into the output verbatim, wherever an

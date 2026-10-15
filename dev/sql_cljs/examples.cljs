@@ -4,8 +4,9 @@
      npx shadow-cljs compile examples && node target/examples.js
 
    The library is pure formatting: every example is a data map in and the
-   {:text :values} map a PostgreSQL client sends out, so nothing here needs
-   a server, a network or a credential. Each example is a named function
+   {:text :values} map a PostgreSQL client (or, under {:dialect :sqlite}, a
+   SQLite client) sends out, so nothing here needs a server, a network or a
+   credential. Each example is a named function
    returning its data; `main` prints each name and its result.
 
    What stands between a README:begin and a README:end mark stands in
@@ -57,6 +58,31 @@
     (:rows result))
   ;; README:end going-live
   )
+
+;; ---------------------------------------------------------------------------
+;; Dialects: one statement map, the PostgreSQL text and the SQLite text
+;; ---------------------------------------------------------------------------
+
+;; README:begin dialect
+(defn products-named-like
+  "The products whose name matches `pattern`, rendered for both dialects
+   from one statement map: {:dialect :pg} (the default) spells $N
+   placeholders and ILIKE, {:dialect :sqlite} spells ? placeholders and
+   LIKE; the values are the same vector either way."
+  [pattern]
+  (let [statement {:select   [:id :name]
+                   :from     [:products]
+                   :where    [:ilike :name pattern]
+                   :order-by [:id]
+                   :limit    20}]
+    {:pg     (sql/format statement {:dialect :pg})
+     :sqlite (sql/format statement {:dialect :sqlite})}))
+;; README:end dialect
+
+(defn dialects
+  "`products-named-like` for the pattern \"%pen%\"."
+  []
+  (products-named-like "%pen%"))
 
 ;; ---------------------------------------------------------------------------
 ;; Scenario: a query built in pieces
@@ -266,6 +292,7 @@
 
 (defn main [& _]
   (show "quick start" (quick-start))
+  (show "dialects" (dialects))
   (show "a query built in pieces" (pieces))
   (show "a report" (report))
   (show "a work queue" (queue))

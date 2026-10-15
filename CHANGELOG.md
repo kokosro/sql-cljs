@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-10-16
+
+### Added
+
+- The `:dialect` option of `sql-cljs.core/format`: `{:dialect :pg}` (the
+  default, identical to no option) renders PostgreSQL, `{:dialect :sqlite}`
+  renders the same statement map for SQLite. Under `:sqlite` every placeholder is
+  `?` (one per `:values` entry, in order of appearance; `:values` is the same
+  vector); `:limit :all` renders `LIMIT -1` and an `:offset` without `:limit`
+  renders `LIMIT -1 OFFSET ?`; `:union` / `:union-all` operands render bare;
+  `:ilike` / `:not-ilike` render `LIKE` / `NOT LIKE`; `:serial` / `:bigserial` /
+  `:smallserial` with `:primary-key` render `INTEGER ... PRIMARY KEY
+  AUTOINCREMENT`; the zero-argument `[:current-timestamp]`, `[:current-date]` and
+  `[:current-time]` render the bare key words `CURRENT_TIMESTAMP`, `CURRENT_DATE`
+  and `CURRENT_TIME`; a function-call `DEFAULT` is parenthesized; `ON CONFLICT DO
+  UPDATE SET` without a target renders. Any other `:dialect` value, `nil`
+  included, is a format-error with `:allowed [:pg :sqlite]`; `:dialect` and
+  `:inline` combine, and DDL is inline with `:values []` in both dialects.
+- The `:sqlite` rejections, each a `:sql-cljs/format-error` with `:op` and `:arg`
+  raised before any text is produced: `:for`, `:distinct-on`, `:on-constraint`,
+  `:truncate`, `:using` on `:delete-from`, `:default` as a value in `VALUES`,
+  `SET` or `DO UPDATE SET`, `INSERT ... SELECT` with `:on-conflict` and no
+  `:where` in the select, an `:insert-into` / `:update` / `:delete-from` body in
+  `:with` / `:with-recursive`, a compound-select operand with its own `:with` /
+  `:with-recursive` / `:order-by` / `:limit` / `:offset` / `:for`, a serial column
+  without `:primary-key`, `:alter-table` with several actions or with
+  `:if-exists`, `:if-not-exists` on `:add-column`, `:if-exists` / `:cascade` /
+  `:restrict` on `:drop-column`, `:create-index` with `:using` or
+  `:concurrently`, without a name, or with `:nulls-first` / `:nulls-last` on a
+  column, `:drop-table` / `:drop-index` / `:drop-view` with several names or with
+  `:cascade` / `:restrict`, `:drop-index` with `:concurrently`, `:create-view`
+  with `:or-replace`.
+- The bridge to [sqlite-cljs](https://github.com/kokosro/sqlite-cljs): the
+  `:sqlite` result goes to `sqlite-cljs.query/execute!` as `{:sql (:text s)
+  :params (:values s)}` or `(into [(:text s)] (:values s))`, a DDL statement
+  (`:values []`) also through `exec!`; one statement binds at most 32766
+  parameters and sql-cljs does not chunk. The SQLite text is written against
+  SQLite 3.53.4, the version better-sqlite3 13.0.3 (sqlite-cljs's driver)
+  bundles; everything the dialect renders is older than that.
+- Documentation: the README's Dialects section and dialect example (run from
+  `dev/sql_cljs/examples.cljs`, held by `examples_test.cljs`), the manual's
+  Dialects section and dual parameter spellings, the SQLite grammar and
+  sqlite-cljs consumer inventory `docs/sqlite-inventory.org`, and
+  `dialect_test.cljs` pinning every `:sqlite` string next to its `:pg` string.
+
+### Changed
+
+- `api-version` is `"0.2.0"`. Formatting without `:dialect` renders the `0.1.0`
+  text and values unchanged.
+
 ## [0.1.0] - 2026-10-15
 
 ### Added
@@ -63,4 +113,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `run-tests.sh`, the cljs.test suite pinning exact SQL text in parameter and
   inline mode.
 
+[0.2.0]: https://github.com/kokosro/sql-cljs/releases/tag/v0.2.0
 [0.1.0]: https://github.com/kokosro/sql-cljs/releases/tag/v0.1.0

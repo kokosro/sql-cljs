@@ -40,6 +40,7 @@
    (-> (h/select :a) (h/from :t) (h/where [:= :a 1]) (h/where [:= :b 2]))
    (merge (h/select :a) (h/from :t) (h/limit 1))
    (= (sql/format (-> (h/select :a) (h/from :t))) (sql/format {:select [:a] :from [:t]}))
+   (sql/format {:insert-into :t :columns [:id :n] :values [[1 "x"]]} {:dialect :sqlite})
    sql/api-version))
 
 ;; ---------------------------------------------------------------------------
@@ -92,6 +93,20 @@
              inline)))
     (shown-in-readme query)
     (shown-in-readme inline)))
+
+(deftest the-dialects-render-one-map
+  (let [{:keys [pg sqlite] :as r} (ex/dialects)]
+    (testing "the same statement map, $N and ILIKE under :pg, ? and LIKE under :sqlite, one values vector"
+      (is (= {:text "SELECT id, name FROM products WHERE name ILIKE $1 ORDER BY id LIMIT $2"
+              :values ["%pen%" 20]}
+             pg))
+      (is (= {:text "SELECT id, name FROM products WHERE name LIKE ? ORDER BY id LIMIT ?"
+              :values ["%pen%" 20]}
+             sqlite))
+      (is (= (:values pg) (:values sqlite))))
+    (testing ":pg is the default"
+      (is (= pg (sql/format {:select [:id :name] :from [:products] :where [:ilike :name "%pen%"] :order-by [:id] :limit 20}))))
+    (shown-in-readme r)))
 
 (deftest a-query-is-built-in-pieces
   (let [{:keys [statement query]} (ex/pieces)]
@@ -195,11 +210,13 @@
     (is (= {:select [:a] :from [:t] :limit 1}
            (value "(merge (h/select :a) (h/from :t) (h/limit 1))")))
     (is (true? (value "(= (sql/format (-> (h/select :a) (h/from :t))) (sql/format {:select [:a], :from [:t]}))")))
-    (is (= "0.1.0" (value "sql/api-version")))))
+    (is (= {:text "INSERT INTO t (id, n) VALUES (?, ?)" :values [1 "x"]}
+           (value "(sql/format {:insert-into :t, :columns [:id :n], :values [[1 \"x\"]]} {:dialect :sqlite})")))
+    (is (= "0.2.0" (value "sql/api-version")))))
 
 (deftest the-readme-shows-what-runs
   (testing "the marked code of the examples"
-    (doseq [label ["quick-start" "going-live" "pieces" "report" "queue" "upsert" "migration" "errors"]
+    (doseq [label ["quick-start" "going-live" "dialect" "pieces" "report" "queue" "upsert" "migration" "errors"]
             :let [code (region label)]]
       (is (some? code) (str "no region " label))
       (is (shows? code) (str "README.md does not show " label ":\n" code))))

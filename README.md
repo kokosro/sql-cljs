@@ -5,9 +5,11 @@ map of clauses, an expression is a vector, and the result is the parameterized q
 a PostgreSQL client sends. Plain ClojureScript data goes in and a `{:text :values}`
 map comes out, the exact shape [pg-cljs](https://github.com/kokosro/pg-cljs)'s
 `query!` takes; keywords and symbols name tables and columns, strings are always
-values, and values are passed through untouched for the client to encode. The
-library is pure formatting: it has no runtime npm dependency at all, nothing in it
-is asynchronous, and nothing touches the network.
+values, and values are passed through untouched for the client to encode. The same
+map renders for SQLite with `{:dialect :sqlite}`, as the `?`-parameterized statement
+[sqlite-cljs](https://github.com/kokosro/sqlite-cljs) takes. The library is pure
+formatting: it has no runtime npm dependency at all, nothing in it is asynchronous,
+and nothing touches the network.
 
 ## Requirements
 
@@ -94,6 +96,87 @@ parses them as SQL. Inline mode and `raw` build SQL text from your data with no
 protection on the server side, so inlining or splicing untrusted input is SQL
 injection: keep `{:inline true}` for consoles and debugging, and build `raw`
 fragments from your own constants only.
+
+## Dialects
+
+`format` takes `{:dialect :pg}`, the default and the same as no option, or
+`{:dialect :sqlite}`. The statement data is the same for both: the map does not
+change, only the rendered text does.
+
+```clojure
+(defn products-named-like
+  "The products whose name matches `pattern`, rendered for both dialects
+   from one statement map: {:dialect :pg} (the default) spells $N
+   placeholders and ILIKE, {:dialect :sqlite} spells ? placeholders and
+   LIKE; the values are the same vector either way."
+  [pattern]
+  (let [statement {:select   [:id :name]
+                   :from     [:products]
+                   :where    [:ilike :name pattern]
+                   :order-by [:id]
+                   :limit    20}]
+    {:pg     (sql/format statement {:dialect :pg})
+     :sqlite (sql/format statement {:dialect :sqlite})}))
+```
+
+`(products-named-like "%pen%")` gives:
+
+```clojure
+{:pg     {:text   "SELECT id, name FROM products WHERE name ILIKE $1 ORDER BY id LIMIT $2"
+          :values ["%pen%" 20]}
+ :sqlite {:text   "SELECT id, name FROM products WHERE name LIKE ? ORDER BY id LIMIT ?"
+          :values ["%pen%" 20]}}
+```
+
+The `:sqlite` result is what [sqlite-cljs](https://github.com/kokosro/sqlite-cljs)'s
+`sqlite-cljs.query` executes. With that namespace required as `q` and a statement
+`s` from `format`, either designator fits, with no adapter:
+
+```clojure
+(q/execute! db {:sql (:text s) :params (:values s)})
+(q/execute! db (into [(:text s)] (:values s)))
+```
+
+A DDL statement has `:values []`, so its `:text` can also go through `q/exec!`, the
+parameterless path that clears sqlite-cljs's statement cache after a schema change.
+sqlite-cljs binds each value by its own rules (a boolean travels as `1` / `0`, an
+integral number and a BigInt as an `INTEGER`, `nil` as `NULL`); the binding table is
+in its README. One statement binds at most 32766 parameters, sqlite-cljs's ceiling:
+rows × columns of a multi-row `INSERT` (plus any other value) must stay within it,
+and sql-cljs does not chunk, so splitting the rows is the caller's job.
+
+What `:sqlite` changes, and what it refuses with a `:sql-cljs/format-error` because
+SQLite has no spelling for it (the dialect never degrades silently):
+
+| construct                                                                                   | under `:sqlite`                                                                                                                                       |
+|---------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| placeholders                                                                                | `?` instead of `$N`, one per value in order of appearance; `:values` is the same vector                                                                |
+| `:limit :all`                                                                               | `LIMIT -1`                                                                                                                                            |
+| `:offset` without `:limit`                                                                  | `LIMIT -1 OFFSET ?`                                                                                                                                   |
+| `:union` / `:union-all` operands                                                            | rendered bare, without parentheses; an operand with its own `:with`, `:with-recursive`, `:order-by`, `:limit`, `:offset` or `:for` is a format-error    |
+| `:ilike` / `:not-ilike`                                                                     | `LIKE` / `NOT LIKE`; SQLite's `LIKE` is case-insensitive for ASCII by default, so `:like` is too                                                       |
+| `:serial`, `:bigserial`, `:smallserial` with `:primary-key`                                 | `INTEGER ... PRIMARY KEY AUTOINCREMENT`; such a column without `:primary-key` is a format-error naming the idiom                                       |
+| `[:current-timestamp]`, `[:current-date]`, `[:current-time]`                                | the bare key words `CURRENT_TIMESTAMP`, `CURRENT_DATE`, `CURRENT_TIME`, in a `DEFAULT` too; under `:pg` these hyphenated names fail the identifier rule |
+| a function-call `DEFAULT`                                                                   | parenthesized, `DEFAULT (LOWER(name))`                                                                                                                |
+| `ON CONFLICT DO UPDATE SET` without a target                                                | rendered, as under `:pg`; SQLite accepts it, PostgreSQL rejects it at execution                                                                       |
+| `:for` (row locking)                                                                        | format-error                                                                                                                                          |
+| `:distinct-on`                                                                              | format-error                                                                                                                                          |
+| `:on-constraint`                                                                            | format-error                                                                                                                                          |
+| `:truncate`                                                                                 | format-error                                                                                                                                          |
+| `:delete-from` with `:using`                                                                | format-error                                                                                                                                          |
+| `:default` as a value in `VALUES`, `SET` or `DO UPDATE SET`                                 | format-error                                                                                                                                          |
+| `INSERT ... SELECT` with `:on-conflict` and no `:where` in the select                       | format-error                                                                                                                                          |
+| an `:insert-into`, `:update` or `:delete-from` body in `:with` / `:with-recursive`          | format-error                                                                                                                                          |
+| `:alter-table` with several actions, with `:if-exists`, with `:if-not-exists` on `:add-column`, or with `:if-exists` / `:cascade` / `:restrict` on `:drop-column` | format-error                                                                                                |
+| `:create-index` with `:using`, with `:concurrently`, without a name, or with `:nulls-first` / `:nulls-last` on a column | format-error                                                                                                                  |
+| `:drop-table`, `:drop-index`, `:drop-view` with several names or with `:cascade` / `:restrict`; `:drop-index` with `:concurrently` | format-error                                                                                                       |
+| `:create-view` with `:or-replace`                                                           | format-error                                                                                                                                          |
+
+Everything else renders identically: the identifier rule and its errors, the
+empty-`IN` error, every nested operator operand parenthesized, `UPDATE ... FROM`,
+`RETURNING`, `ON CONFLICT` with column or expression targets, `WITH` over select
+bodies, the rest of the DDL. DDL stays inline with `:values []` in both dialects,
+and `{:inline true}` renders the same text in both.
 
 ## Scenarios
 
@@ -368,8 +451,11 @@ Every function of this library is a pure helper. No server, no network:
 (= (sql/format (-> (h/select :a) (h/from :t))) (sql/format {:select [:a] :from [:t]}))
 ;; => true
 
+(sql/format {:insert-into :t :columns [:id :n] :values [[1 "x"]]} {:dialect :sqlite})
+;; => {:text "INSERT INTO t (id, n) VALUES (?, ?)" :values [1 "x"]}
+
 sql/api-version
-;; => "0.1.0"
+;; => "0.2.0"
 ```
 
 Any lettered keyword at the head of a vector is a function call (`[:coalesce
@@ -453,6 +539,11 @@ the parameterized form.
   twice is sent twice.
 * **Inline mode** — `{:inline true}` spells every value as a literal and returns
   `:values []`, for consoles and debugging.
+* **Two dialects** — `{:dialect :pg}` (the default) renders PostgreSQL and
+  `{:dialect :sqlite}` renders the same statement map for SQLite: `?` placeholders,
+  SQLite's `LIMIT` / `OFFSET`, compound-select, `LIKE`, serial-column, `DEFAULT` and
+  `CURRENT_*` spellings, and a format-error for every clause SQLite has no spelling
+  for, so nothing degrades silently.
 * **Queries** — `SELECT` with `DISTINCT` / `DISTINCT ON`, `FROM` with aliases and
   subqueries, `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS JOIN` with `ON` and
   `USING`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with directions and `NULLS
@@ -484,11 +575,12 @@ the parameterized form.
 
 ## Limits and settings
 
-The one option of `format`:
+The two options of `format`:
 
 | option     | default | meaning                                                                                  |
 |------------|---------|------------------------------------------------------------------------------------------|
-| `:inline`  | `false` | `true` renders every value as a SQL literal in `:text` and returns `:values []`; DDL statements render this way in both modes |
+| `:dialect` | `:pg`   | `:pg` renders PostgreSQL with `$N` placeholders; `:sqlite` renders SQLite with `?` placeholders and the translations and rejections of the Dialects table; any other value, `nil` included, is a format-error with `:allowed [:pg :sqlite]` |
+| `:inline`  | `false` | `true` renders every value as a SQL literal in `:text` and returns `:values []`; DDL statements render this way in both modes and both dialects |
 
 What the library does not do:
 
@@ -517,7 +609,19 @@ What the library does not do:
   and `-Infinity` are not SQL numeric constants and are a format-error inline (pass
   them as parameters, or as strings for the server to cast); so is any value with no
   literal spelling (a date, an object).
-* **An empty `IN` list** is a format-error, not `IN ()`.
+* **An empty `IN` list** is a format-error, not `IN ()`, in both dialects.
+* **Under `:sqlite`:** row locking, `DISTINCT ON`, `ON CONSTRAINT`, `TRUNCATE`,
+  `DELETE ... USING`, `DEFAULT` as a value, `INSERT ... SELECT ... ON CONFLICT`
+  without a `WHERE`, data-modifying CTE bodies, compound operands with their own
+  ordering or limit, multi-action or conditional `ALTER TABLE`, index methods,
+  `CONCURRENTLY`, unnamed indexes, `NULLS FIRST` / `LAST` in index columns,
+  multi-name or `CASCADE` / `RESTRICT` drops and `OR REPLACE` are format-errors (the
+  table under Dialects), and a `:serial` column needs `:primary-key`. These are
+  grammar facts of SQLite, not choices of the library. One statement binds at most
+  32766 parameters, sqlite-cljs's ceiling, counting rows × columns of a multi-row
+  `INSERT`, and sql-cljs does not chunk. The SQLite text is written against SQLite
+  3.53.4, the version sqlite-cljs's driver (better-sqlite3 13.0.3) bundles;
+  everything the dialect renders is older than that.
 * **`ON CONFLICT`:** both arbiter forms are exposed and you pick; the PostgreSQL
   documentation prefers unique index inference (`:on-columns`) to `:on-constraint`.
   `DROP INDEX CONCURRENTLY` takes one name and no `CASCADE`, which the library
@@ -536,6 +640,9 @@ What the library does not do:
 * [`docs/sql-api-inventory.org`](docs/sql-api-inventory.org) — the inventory of the
   PostgreSQL SQL grammar the library covers, with the documentation page each fact
   was taken from.
+* [`docs/sqlite-inventory.org`](docs/sqlite-inventory.org) — the same for the SQLite
+  grammar behind `{:dialect :sqlite}`, with the sqlite-cljs facts the bridge rests
+  on (designators, value binding, the parameter ceiling, the bundled version).
 * The docstrings of `src/sql_cljs/` are the reference of each function; the
   namespace docstring of `sql-cljs.core` lists every clause shape.
 
@@ -554,17 +661,18 @@ test/sql_cljs/      the cljs.test suite: one battery per surface, the README
                     lockstep (examples_test) and the API index check (api_index_test)
 docs/
   sql-cljs.org              the manual
-  sql-api-inventory.org     the grammar inventory
+  sql-api-inventory.org     the PostgreSQL grammar inventory
+  sqlite-inventory.org      the SQLite grammar and sqlite-cljs consumer inventory
 ```
 
 ## Public API index
 
 * `sql-cljs.core`:
-  * `(format query)`, `(format query {:inline true})` — a statement map in,
-    `{:text "SELECT ..." :values [...]}` out.
+  * `(format query)`, `(format query {:dialect :sqlite})`, `(format query {:inline
+    true})` — a statement map in, `{:text "SELECT ..." :values [...]}` out.
   * `(raw sql)` — a SQL fragment spliced verbatim; `[:raw "..."]` in expression
     position is the same.
-  * `api-version` — the version marker, `"0.1.0"`.
+  * `api-version` — the version marker, `"0.2.0"`.
 * `sql-cljs.helpers`, one builder per clause, each returning `{clause value}` and
   taking the statement being built as an optional first argument:
   * queries — `select`, `distinct`, `distinct-on`, `from`, `join`, `inner-join`,

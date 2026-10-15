@@ -9,7 +9,7 @@
   (try (f) nil (catch :default e (ex-data e))))
 
 (deftest api-version-is-exact
-  (is (= "0.1.0" sql/api-version)))
+  (is (= "0.2.0" sql/api-version)))
 
 ;; ---------------------------------------------------------------------------
 ;; format: the entry point

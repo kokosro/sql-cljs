@@ -1,5 +1,5 @@
 #+TITLE: sql-cljs Manual
-#+SUBTITLE: A pure ClojureScript (Node.js) SQL query builder for PostgreSQL; maps and vectors in, {:text :values} out
+#+SUBTITLE: A pure ClojureScript (Node.js) SQL query builder for PostgreSQL and SQLite; maps and vectors in, {:text :values} out
 #+OPTIONS: toc:2 num:t ^:nil
 #+LANGUAGE: en
 
@@ -10,7 +10,9 @@ client sends. A statement is a map of clauses (={:select [:a :b] :from [:t] :whe
 [:= :t.a "x"]}=), an expression is a vector whose first element is the operator or
 function (=[:= :a 1]=, =[:count :*]=), keywords and symbols name tables and columns,
 strings are always values, and =format= gives ={:text "SELECT a, b FROM t WHERE t.a =
-$1" :values ["x"]}=, the exact map =pg-cljs.core/query!= takes. The library is pure
+$1" :values ["x"]}=, the exact map =pg-cljs.core/query!= takes. With ={:dialect
+:sqlite}= the same map renders the =?=-parameterized statement =sqlite-cljs.query=
+takes (see Dialects). The library is pure
 formatting: no JavaScript interop in =src/= or =test/=, no runtime npm dependency,
 nothing asynchronous, no network, no file access. It decides nothing about
 execution: it holds no connection and sends nothing.
@@ -25,7 +27,9 @@ Three public namespaces:
 
 The external surface the library renders to is a grammar, not a package: the SQL
 of PostgreSQL as its documentation states it. The inventory of that grammar for the
-=0.1.0= scope, with the page each fact was taken from, is =docs/sql-api-inventory.org=.
+=0.1.0= scope, with the page each fact was taken from, is =docs/sql-api-inventory.org=;
+the SQLite grammar and the sqlite-cljs consumer facts behind the =:sqlite= dialect are
+=docs/sqlite-inventory.org=.
 This manual is about using the library. HoneySQL 2.x is the design reference for the
 data shapes; none of its code is used.
 
@@ -146,17 +150,21 @@ Two spellings are key words rather than names: =:default= in a value slot of =IN
 =LIMIT ALL=. =:excluded/name= in =ON CONFLICT DO UPDATE SET= is a qualified name that
 happens to name the proposed row, as the SQL does.
 
-** Parameters: $N in order of appearance, values never touched
+** Parameters: $N or ? in order of appearance, values never touched
 
-Every value becomes the next placeholder, =$1=, =$2=, ..., numbered in the order the
-values appear in the text, across nested statements and CTEs (the CTE's values come
-first, since the =WITH= clause renders first). The value is appended to =:values= as
-it was written: no coercion, no stringification, no copy; a string in =:values= is
-the same object the caller passed. A value used twice is sent twice (=$1= and =$2=);
-the library never deduplicates. The client encodes the values for the wire; with
-pg-cljs that is =pg='s encoding: strings, numbers, booleans and BigInts as their text
-for the server to cast, =nil= as =NULL=, vectors as array literals, Dates as
-timestamps. A ClojureScript list or set in a value position is a format-error (a
+Every value becomes the next placeholder, numbered in the order the values appear in
+the text, across nested statements and CTEs (the CTE's values come first, since the
+=WITH= clause renders first). The spelling is the dialect's: =$1=, =$2=, ... under
+={:dialect :pg}= (the default), =?= for each under ={:dialect :sqlite}= (see
+Dialects); the numbering model and =:values= are the same in both. The value is
+appended to =:values= as it was written: no coercion, no stringification, no copy; a
+string in =:values= is the same object the caller passed. A value used twice is sent
+twice (=$1= and =$2=, or =?= and =?=); the library never deduplicates. The client
+encodes the values for the wire; with pg-cljs that is =pg='s encoding: strings,
+numbers, booleans and BigInts as their text for the server to cast, =nil= as =NULL=,
+vectors as array literals, Dates as timestamps; with sqlite-cljs its own binding
+rules (booleans as =1= / =0=, integral numbers and BigInts as =INTEGER=, Dates
+refused). A ClojureScript list or set in a value position is a format-error (a
 list or set cannot travel as a parameter: =vec= it); a vector in a value position is
 an expression, so an array value goes through =raw= or a cast on the server side.
 
@@ -404,6 +412,129 @@ to the namespace with an alias.
   fragment.
 - DDL literals are always inline and a DDL statement's =:values= is =[]=.
 
+* Dialects
+
+=format= takes ={:dialect :pg}= (the default, the same as no option) or ={:dialect
+:sqlite}=. The statement data is the same for both: the map does not change, only the
+rendered text does. Any other value, =nil= included, is a format-error with =:op
+:format= and =:allowed [:pg :sqlite]=; =:dialect= and =:inline= combine.
+
+#+begin_src clojure
+(def q {:select [:id :name] :from [:products] :where [:ilike :name "%pen%"] :order-by [:id] :limit 20})
+(sql/format q {:dialect :pg})
+;; => {:text "SELECT id, name FROM products WHERE name ILIKE $1 ORDER BY id LIMIT $2" :values ["%pen%" 20]}
+(sql/format q {:dialect :sqlite})
+;; => {:text "SELECT id, name FROM products WHERE name LIKE ? ORDER BY id LIMIT ?" :values ["%pen%" 20]}
+#+end_src
+
+** What =:sqlite= changes
+
+- Placeholders: =?= for every value, one per =:values= entry, in order of appearance
+  across nested statements and CTEs; the numbering model of =$N= with another
+  spelling, and =:values= the same vector in both dialects.
+- =:limit :all= renders =LIMIT -1=; an =:offset= without =:limit= renders =LIMIT -1
+  OFFSET ?= (SQLite's =OFFSET= needs a =LIMIT=; a negative =LIMIT= means no bound).
+  A numeric =:limit= stays a parameter.
+- =:union= / =:union-all= operands render bare: =SELECT a FROM t UNION SELECT a FROM
+  u=, left to right however nested. An operand carrying its own =:with=,
+  =:with-recursive=, =:order-by=, =:limit=, =:offset= or =:for= is a format-error
+  (=:op= the set operator, =:arg= the operand, =:allowed= the six keys); a =:with=,
+  =:order-by=, =:limit= or =:offset= on the compound itself renders.
+- =:ilike= renders =LIKE= and =:not-ilike= =NOT LIKE=: SQLite has no =ILIKE=, and its
+  =LIKE= is case-insensitive for ASCII by default, so =:like= / =:not-like= are too
+  (a change of meaning from PostgreSQL that the dialect cannot undo:
+  =case_sensitive_like= is a connection pragma the library does not own).
+- =:serial=, =:bigserial= and =:smallserial= render =INTEGER=, and =AUTOINCREMENT=
+  follows the column's =PRIMARY KEY= wherever it stands among the constraints
+  (=INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT CHECK (id > 0)=, =INTEGER CONSTRAINT pk
+  PRIMARY KEY AUTOINCREMENT=). Such a column without =:primary-key= on the column
+  itself (a table-level =[:primary-key :id]= does not count) is a format-error with
+  =:op :columns= whose message names the idiom, =INTEGER PRIMARY KEY
+  [AUTOINCREMENT]=. =:integer :primary-key= stays the plain rowid alias in both.
+- The zero-argument =[:current-timestamp]=, =[:current-date]= and =[:current-time]=
+  render the bare key words =CURRENT_TIMESTAMP=, =CURRENT_DATE= and =CURRENT_TIME=, in
+  a select list, a predicate or a =DEFAULT= (unparenthesized there: a key word, not a
+  call). Under =:pg= these hyphenated names fail the identifier rule as any other; the
+  underscore spelling =[:current_timestamp]= is a plain call, =CURRENT_TIMESTAMP()=,
+  in both dialects, and with an argument the hyphenated forms are ordinary calls that
+  fail in both. =[:now]= renders =NOW()= in both; SQLite has no such function, so a
+  SQLite default is =[:default [:current-timestamp]]=.
+- A function-call =DEFAULT= is parenthesized: =DEFAULT (LOWER(name))=, =DEFAULT
+  (COALESCE(LOWER(b), 'z'))=. An operator default is parenthesized in both dialects;
+  literals, =nil=, booleans and =raw= fragments are bare in both.
+- =ON CONFLICT DO UPDATE SET= without a target renders in both dialects; SQLite accepts
+  it, PostgreSQL rejects it at execution.
+
+** What =:sqlite= refuses
+
+Each is a =:sql-cljs/format-error= raised before any text is produced, =:op= the
+clause and =:arg= the offending piece, the message naming what SQLite has instead
+where something exists. These are grammar facts of SQLite, not choices of the library.
+
+- =:for= (no row-locking clause).
+- =:distinct-on= (no =DISTINCT ON=; plain =:distinct= renders).
+- =:on-constraint= (no =ON CONSTRAINT= arbiter; =:on-columns= with =:index-where=
+  renders).
+- =:truncate= (no =TRUNCATE=; =DELETE FROM t= renders in both).
+- =:using= on =:delete-from= (no =DELETE ... USING=; a subquery in =:where= renders).
+- =:default= as a value in a =VALUES= row (vector or map), a =SET= assignment or a
+  =DO UPDATE SET= assignment (no =DEFAULT= key word in an expression; omit the column).
+- =INSERT ... SELECT= with =:on-conflict= whose select has no =:where= (SQLite's
+  parser would read =ON= as a join constraint; give the select a =:where=).
+- An =:insert-into=, =:update= or =:delete-from= body in =:with= / =:with-recursive=
+  (CTE bodies are select statements; a =:with= over select bodies in front of a
+  modification renders).
+- =:alter-table= with several =:actions=, with =:if-exists= on the statement, with
+  =:if-not-exists= on =:add-column=, or with =:if-exists= / =:cascade= / =:restrict=
+  on =:drop-column=. One =ADD COLUMN=, =DROP COLUMN= or =RENAME COLUMN= per statement
+  renders; a serial column added this way follows the serial rule above.
+- =:create-index= with =:using= (no index method), with =:concurrently=, without a
+  name (=nil=), or with =:nulls-first= / =:nulls-last= on a column. =:unique=,
+  =:if-not-exists=, =:asc= / =:desc=, expression columns and the partial =:where=
+  render.
+- =:drop-table=, =:drop-index= and =:drop-view= with several names or with =:cascade=
+  / =:restrict=; =:drop-index= with =:concurrently=. One name with =:if-exists=
+  renders.
+- =:create-view= with =:or-replace= (=DROP VIEW IF EXISTS= first).
+
+Everything else renders identically: the identifier rule and its errors, the
+empty-=IN= error, every nested operator operand parenthesized (=WHERE (a = ?) AND (b
+IN (?, ?))=), =UPDATE ... FROM=, =RETURNING=, =ON CONFLICT= with column or expression
+targets, =WITH= / =WITH RECURSIVE= over select bodies, =CREATE TABLE= with its
+constraints, =CREATE VIEW= with column names. DDL is inline with =:values []= in both
+dialects, and ={:inline true}= renders the same text in both (booleans as =TRUE= /
+=FALSE=, legal on the floor below).
+
+** The bridge to sqlite-cljs
+
+sql-cljs renders ={:text :values}=; =sqlite-cljs.query= takes either of two
+designators built from it, with no adapter:
+
+#+begin_src clojure
+(sqlite-cljs.query/execute! db {:sql (:text s) :params (:values s)})
+(sqlite-cljs.query/execute! db (into [(:text s)] (:values s)))
+#+end_src
+
+Both bypass sqlite-cljs's own DSL, so its identifier quoting, =json_each= rewriting
+and version gates do not apply to sql-cljs text. A DDL statement (=:values []=) can
+also go through =sqlite-cljs.query/exec!= as a string, the parameterless path that
+clears the statement cache after a schema change. The values bind per sqlite-cljs's
+rules (=nil= as =NULL=, booleans as =1= / =0=, integral numbers and BigInts as
+=INTEGER=, other numbers as =REAL=, strings as =TEXT=, Dates and collections refused;
+its README holds the table). One statement binds at most 32766 parameters,
+sqlite-cljs's ceiling: rows × columns of a multi-row =INSERT= (plus any other value)
+must stay within it, and sql-cljs does not chunk; split the rows and =format= one
+statement per chunk.
+
+** The version floor
+
+The SQLite text is written against SQLite 3.53.4, the version the consumer's driver
+(better-sqlite3 13.0.3, sqlite-cljs's one runtime dependency) bundles; everything the
+dialect renders is older (=RIGHT= / =FULL JOIN= 3.39.0, =RETURNING= and the targetless
+=DO UPDATE= 3.35.0, =UPDATE ... FROM= 3.33.0, =TRUE= / =FALSE= 3.23.0). The grammar
+facts behind each difference, with the documentation page each was taken from, are
+in =docs/sqlite-inventory.org=.
+
 * Errors
 
 One taxonomy, =:sql-cljs/format-error=, raised as an =ex-info= before any text is
@@ -516,7 +647,9 @@ compile node-test --config-merge '{:autorun false}'=) and runs (=node
 target/node-test.js=). It is network-free by nature. The batteries, one per surface,
 pin exact SQL text: =format_test= (the select list, joins, every operator, set
 operations, CTEs, locking, the synopsis order, nested statements), =values_test= (=$N=
-order, pass-through, inline mode), =dml_test= and =dml_errors_test=, =ddl_test= and
+order, pass-through, inline mode), =dialect_test= (every =:sqlite= difference and
+rejection next to its =:pg= string, and that no =:dialect= equals ={:dialect :pg}=),
+=dml_test= and =dml_errors_test=, =ddl_test= and
 =ddl_errors_test=, =errors_test= (every malformed input with its =:op= and =:arg=),
 =helpers_test= (every builder's map and the composition rules), =util_test=,
 =core_test=. Two tests hold the documentation to the code:
@@ -556,12 +689,14 @@ clause shape.
 ** sql-cljs.core
 
 **** sql-cljs.core/api-version
-=api-version= — the version of the sql-cljs public surface, a string (="0.1.0"=).
+=api-version= — the version of the sql-cljs public surface, a string (="0.2.0"=).
 
 **** sql-cljs.core/format
 =(format query)=, =(format query opts)= — renders the statement map =query= to ={:text
 :values}=: =$1=, =$2=, ... in order of appearance and the values exactly as written.
-=opts= is =nil= or a map with the one key =:inline= (=true= renders every value as a
+=opts= is =nil= or a map with the keys =:dialect= (=:pg=, the default, renders
+PostgreSQL with =$N=; =:sqlite= renders SQLite with =?= and the translations and
+rejections of the Dialects section) and =:inline= (=true= renders every value as a
 literal and returns =:values []=). Throws =:sql-cljs/format-error= for anything
 malformed, including a bad =opts=.
 
