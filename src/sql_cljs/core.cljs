@@ -64,6 +64,49 @@
      :restart-identity / :continue-identity and :cascade / :restrict, each
      true or false.
 
+   Data definition, one head per statement. DDL takes no parameters, so
+   every literal in it (a DEFAULT, a CHECK constant, a partial-index
+   predicate, a view body) is spelled out inline whatever the :inline
+   option, and :values is [] (a date or an object with no literal spelling
+   is a format-error). Names are plain lower-case entities as everywhere;
+   a mixed-case or exotic name goes through raw.
+
+   - :create-table :t with :if-not-exists true and :columns, a vector of
+     column definitions [name type & constraints]: [:id :serial
+     :primary-key], [:name [:varchar 40] :not-null], [:price :numeric
+     [:default 0]], [:did :integer [:references :d :did] [:on-delete
+     :cascade]]. A type is a keyword rendered upper-case (:text, :bigint;
+     :double-precision and :timestamp-with-time-zone spell multi-word
+     types, the - becoming a space), a vector [keyword & numbers] for
+     NAME(n, ...) ([:varchar 40], [:numeric 10 2]), or raw for anything
+     else (array types, (raw \"text[]\")); a string is a value, never a
+     type. Column constraints, in the order written: :not-null, :null,
+     :unique, :primary-key, [:default expr] (an operator expression is
+     parenthesized), [:check expr] (always parenthesized), [:references
+     :t & cols], then [:on-delete action] / [:on-update action] (actions
+     :no-action, :restrict, :cascade, :set-null, :set-default),
+     [:constraint :name constraint], or raw. :constraints, a vector of
+     table constraints: [:primary-key :a :b], [:unique :a], [:check expr],
+     [:foreign-key [:a :b] [:references :t :c :d] [:on-delete :cascade]],
+     [:constraint :name constraint], or raw; they follow the columns.
+   - :drop-table :t or [:t :u], with :if-exists, :cascade / :restrict.
+   - :alter-table :t with :if-exists and :actions, a vector of
+     [:add-column [name type & constraints] :if-not-exists], [:drop-column
+     :c :if-exists :cascade|:restrict] and [:rename-column :old :new]
+     (the options after the arguments are optional); several ADD / DROP
+     actions are comma-separated, RENAME COLUMN stands alone.
+   - :create-index :name (nil for an unnamed index) with :unique,
+     :concurrently, :if-not-exists, :on :t, :using :gin (the method),
+     :columns, a vector of :order-by items (:a, [:b :desc :nulls-last],
+     [[:lower :email]]; an operator expression is parenthesized), and
+     :where, the partial-index predicate.
+   - :drop-index :i or [:i :j], with :concurrently (then exactly one name
+     and no :cascade), :if-exists, :cascade / :restrict.
+   - :create-view :v with :or-replace, :columns [:a :b] (the view's column
+     names) and :as, the body: a statement map, rendered without
+     parentheses, or raw.
+   - :drop-view :v or [:v :w], with :if-exists, :cascade / :restrict.
+
    Expressions: [:= a b] [:not= a b] (<>) [:<> a b] [:< a b] [:> a b]
    [:<= a b] [:>= a b], [:and ...] [:or ...] [:not x], [:+ ...] [:- ...]
    [:* ...] [:/ ...] [:% ...] ([:- x] alone is unary minus), [:in x [...]]
@@ -337,10 +380,10 @@
 
 (defn- list-of
   "The items of a list clause: a vector (any sequential) or a single
-   entity; empty or anything else is a format-error."
+   entity or raw fragment; empty or anything else is a format-error."
   [op x]
   (cond
-    (u/entity? x) [x]
+    (or (u/entity? x) (u/raw? x)) [x]
     (sequential? x) (if (seq x)
                       (vec x)
                       (throw (u/format-error op x (str (pr-str op) " must not be empty"))))
@@ -517,44 +560,51 @@
 (def ^:private order-modifiers [:asc :desc :nulls-first :nulls-last])
 
 (defn- order-modifier
-  [x acc md0]
+  [op x acc md0]
   (let [md (kw md0)]
     (cond
       (contains? directions md)
       (if (:dir acc)
-        (throw (u/format-error :order-by x "only one of :asc / :desc per item"))
+        (throw (u/format-error op x "only one of :asc / :desc per item"))
         (assoc acc :dir (get directions md)))
 
       (contains? nulls-orders md)
       (if (:nulls acc)
-        (throw (u/format-error :order-by x "only one of :nulls-first / :nulls-last per item"))
+        (throw (u/format-error op x "only one of :nulls-first / :nulls-last per item"))
         (assoc acc :nulls (get nulls-orders md)))
 
       :else
-      (throw (u/format-error :order-by x
-                             (str "an :order-by vector is [expression & modifiers] with"
+      (throw (u/format-error op x
+                             (str "an item of " (pr-str op) " is [expression & modifiers] with"
                                   " modifiers among :asc :desc :nulls-first :nulls-last;"
                                   " an expression with its own arguments is nested,"
                                   " [[:lower :name] :asc]; got " (pr-str x))
                              {:allowed order-modifiers})))))
 
 (defn- order-item
-  [ctx x]
-  (cond
-    (and (u/entity? x) (or (contains? directions (kw x)) (contains? nulls-orders (kw x))))
-    (throw (u/format-error :order-by x
-                           (str (pr-str x) " is a sort modifier, not a column: an :order-by item"
-                                " with modifiers is a vector, [[:a :desc]]")))
+  "An item of ORDER BY (or of an index column list, with :op op): an
+   expression, or [expression & modifiers]. paren? parenthesizes an operator
+   expression, as an index column must be."
+  ([ctx x] (order-item ctx :order-by x false))
+  ([ctx op x paren?]
+   (let [render (fn [e]
+                  (let [text (expression ctx op e)]
+                    (if (and paren? (operator-form? e)) (str "(" text ")") text)))]
+     (cond
+       (and (u/entity? x) (or (contains? directions (kw x)) (contains? nulls-orders (kw x))))
+       (throw (u/format-error op x
+                              (str (pr-str x) " is a sort modifier, not a column: an item of "
+                                   (pr-str op) " with modifiers is a vector, [[:a :desc]]")))
 
-    (vector? x)
-    (do
-      (when (empty? x)
-        (throw (u/format-error :order-by x "an empty vector is not an :order-by item")))
-      (let [text (expression ctx :order-by (first x))
-            {:keys [dir nulls]} (reduce #(order-modifier x %1 %2) {} (rest x))]
-        (str text (when dir (str " " dir)) (when nulls (str " " nulls)))))
+       (vector? x)
+       (do
+         (when (empty? x)
+           (throw (u/format-error op x (str "an empty vector is not an item of " (pr-str op)))))
+         (let [text (render (first x))
+               {:keys [dir nulls]} (reduce #(order-modifier op x %1 %2) {} (rest x))]
+           (str text (when dir (str " " dir)) (when nulls (str " " nulls)))))
 
-    :else (expression ctx :order-by x)))
+       :else (render x)))))
 
 (defn- emit-order-by
   [ctx m k]
@@ -910,6 +960,450 @@
        (when (flag m :restrict) " RESTRICT")))
 
 ;; ---------------------------------------------------------------------------
+;; Data definition: CREATE / DROP / ALTER TABLE, CREATE / DROP INDEX,
+;; CREATE / DROP VIEW. DDL carries no parameters: `statement` switches the
+;; context to inline rendering for these heads, so every literal (a DEFAULT
+;; value, a CHECK constant, a partial-index predicate, a view body) is spelled
+;; out whatever the :inline option, and :values stays [].
+;; ---------------------------------------------------------------------------
+
+(defn- plain-name
+  "A name that is never qualified (a column, a constraint, an index): an
+   entity of one part, or a raw fragment."
+  [op x]
+  (cond
+    (u/raw? x) (u/raw-sql x)
+
+    (and (u/entity? x) (< 1 (count (u/entity-parts x))))
+    (throw (u/format-error op x
+                           (str (pr-str x) " is qualified; a column, constraint or index name is a"
+                                " plain name here (no schema, no table prefix)")))
+
+    :else (u/entity-name op x false)))
+
+(defn- type-word
+  "The upper-case text of the type keyword x (t is the whole type, for
+   errors): lower-case words joined by - become space-separated words,
+   :double-precision -> DOUBLE PRECISION; a schema-qualified :s/t is S.T."
+  [op t x]
+  (let [parts (u/entity-parts x)]
+    (doseq [part parts
+            word (str/split part #"-" -1)]
+      (when-not (re-matches u/identifier-pattern word)
+        (throw (u/format-error op t
+                               (str (pr-str x) " is not a type name: a type is a keyword of lower-case"
+                                    " words joined by - (:text, :bigint, :double-precision,"
+                                    " :timestamp-with-time-zone), rendered upper-case, or a raw"
+                                    " fragment spliced verbatim, (raw \"text[]\")")
+                               {:entity x}))))
+    (str/upper-case (str/join "." (mapv #(str/replace % "-" " ") parts)))))
+
+(defn- type-name
+  "The SQL text of a column type: a keyword -> its upper-case word(s), a
+   vector [keyword & numbers] -> NAME(n, ...), a raw fragment -> verbatim.
+   A string is a value, never a type."
+  [op t]
+  (cond
+    (u/raw? t) (u/raw-sql t)
+    (u/entity? t) (type-word op t t)
+
+    (vector? t)
+    (let [[nm & args] t]
+      (when-not (u/entity? nm)
+        (throw (u/format-error op t
+                               (str "a type with arguments is [keyword & numbers], [:varchar 255] or"
+                                    " [:numeric 10 2]; got " (pr-str t)))))
+      (when (empty? args)
+        (throw (u/format-error op t
+                               (str "a type with arguments is [keyword & numbers], [:varchar 255];"
+                                    " a type without arguments is the bare keyword " (pr-str nm)))))
+      (doseq [a args]
+        (when-not (number? a)
+          (throw (u/format-error op t
+                                 (str "the arguments of a type are numbers, [:varchar 255]; got "
+                                      (pr-str a) " in " (pr-str t)
+                                      (when (string? a) " (strings are values, never type arguments)")
+                                      "; a type spelled otherwise goes through the raw escape hatch")))))
+      (str (type-word op t nm) "(" (str/join ", " (mapv str args)) ")"))
+
+    :else
+    (throw (u/format-error op t
+                           (str "a column type is a keyword (:text), a vector with arguments"
+                                " ([:varchar 255]) or a raw fragment, got " (pr-str t)
+                                (when (string? t)
+                                  (str " (strings are values, never types; (raw " (pr-str t)
+                                       ") splices a type spelled by hand)")))))))
+
+(def ^:private referential-actions
+  {:no-action "NO ACTION" :restrict "RESTRICT" :cascade "CASCADE"
+   :set-null "SET NULL" :set-default "SET DEFAULT"})
+
+(def ^:private action-words {:on-delete "ON DELETE" :on-update "ON UPDATE"})
+
+(defn- references-form?
+  [x]
+  (and (vector? x) (= :references (kw (first x)))))
+
+(defn- action-form?
+  [x]
+  (and (vector? x) (contains? action-words (kw (first x)))))
+
+(defn- referential-action
+  "[:on-delete action] or [:on-update action] -> ON DELETE CASCADE, ..."
+  [op x]
+  (when-not (= 2 (count x))
+    (throw (u/format-error op x
+                           (str (pr-str (first x)) " takes exactly one referential action, "
+                                (pr-str (vec (keys referential-actions))) "; got " (pr-str x)))))
+  (let [a (second x)
+        word (get referential-actions (kw a))]
+    (when-not word
+      (throw (u/format-error op x
+                             (str "unknown referential action " (pr-str a)
+                                  "; the actions are listed under :allowed")
+                             {:allowed (vec (keys referential-actions))})))
+    (str (get action-words (kw (first x))) " " word)))
+
+(defn- references
+  "[:references table & columns] -> REFERENCES t (a, b)."
+  [op x]
+  (when (< (count x) 2)
+    (throw (u/format-error op x "[:references table & columns] names the referenced table")))
+  (let [[_ t & cols] x]
+    (str "REFERENCES " (target-base op t)
+         (when (seq cols)
+           (str " (" (str/join ", " (mapv #(plain-name op %) cols)) ")")))))
+
+(defn- default-constraint
+  "[:default expression] -> DEFAULT literal; an operator expression is
+   parenthesized, DEFAULT (1 + 2), as an operand is."
+  [ctx op x]
+  (when-not (= 2 (count x))
+    (throw (u/format-error op x (str "[:default expression] takes exactly one expression, got " (pr-str x)))))
+  (str "DEFAULT " (operand ctx op (second x))))
+
+(defn- check-constraint
+  "[:check expression] -> CHECK (expression), always parenthesized."
+  [ctx op x]
+  (when-not (= 2 (count x))
+    (throw (u/format-error op x (str "[:check expression] takes exactly one expression, got " (pr-str x)))))
+  (let [c (second x)]
+    (cond
+      (u/raw? c) (str "CHECK (" (u/raw-sql c) ")")
+      (vector? c) (str "CHECK (" (expression ctx op c) ")")
+      :else (throw (u/format-error op x
+                                   (str "[:check expression] takes an expression vector such as"
+                                        " [:> :a 0], got " (pr-str c)))))))
+
+(defn- named-constraint
+  "[:constraint name constraint] -> CONSTRAINT name ..., the body rendered
+   by render (a column or a table constraint)."
+  [ctx op x render]
+  (when-not (= 3 (count x))
+    (throw (u/format-error op x
+                           (str "[:constraint name constraint] names one constraint, e.g."
+                                " [:constraint :firstkey :primary-key] or"
+                                " [:constraint :con1 [:check [:> :did 100]]]; got " (pr-str x)))))
+  (let [[_ nm body] x]
+    (when (and (vector? body) (= :constraint (kw (first body))))
+      (throw (u/format-error op x "a named constraint cannot be named twice")))
+    (str "CONSTRAINT " (plain-name op nm) " " (render ctx op body))))
+
+(def ^:private column-constraint-words
+  {:not-null "NOT NULL" :null "NULL" :unique "UNIQUE" :primary-key "PRIMARY KEY"})
+
+(def ^:private column-constraint-heads
+  [:check :constraint :default :on-delete :on-update :references])
+
+(defn- column-constraint
+  "One constraint of a column definition: a keyword (:not-null, :null,
+   :unique, :primary-key), a vector ([:default x], [:check expr],
+   [:references t & cols], [:on-delete action], [:on-update action],
+   [:constraint name constraint]) or a raw fragment."
+  [ctx op x]
+  (cond
+    (u/raw? x) (u/raw-sql x)
+
+    (u/entity? x)
+    (or (get column-constraint-words (kw x))
+        (throw (u/format-error op x
+                               (str "unknown column constraint " (pr-str x)
+                                    "; the keyword constraints are listed under :allowed, the"
+                                    " others are vectors: [:default x], [:check expr],"
+                                    " [:references t :col], [:on-delete :cascade],"
+                                    " [:constraint :name ...]")
+                               {:allowed (vec (keys column-constraint-words))})))
+
+    (and (vector? x) (seq x))
+    (case (kw (first x))
+      :default (default-constraint ctx op x)
+      :check (check-constraint ctx op x)
+      :references (references op x)
+      (:on-delete :on-update) (referential-action op x)
+      :constraint (named-constraint ctx op x column-constraint)
+      (throw (u/format-error op x
+                             (str "unknown column constraint " (pr-str (first x))
+                                  "; a constraint vector starts with one of the keys listed under :allowed")
+                             {:allowed column-constraint-heads})))
+
+    :else
+    (throw (u/format-error op x
+                           (str "a column constraint is a keyword (:not-null, :unique, :primary-key),"
+                                " a vector ([:default 0], [:check [:> :a 0]], [:references :t :id])"
+                                " or a raw fragment, got " (pr-str x))))))
+
+(defn- column-definition
+  "[name type & constraints] -> name TYPE constraint ..., the constraints in
+   the order written; a referential action follows its [:references ...]."
+  [ctx op x]
+  (when-not (and (vector? x) (<= 2 (count x)))
+    (throw (u/format-error op x
+                           (str "a column definition is [name type & constraints], e.g."
+                                " [:id :serial :primary-key] or [:name [:varchar 40] :not-null]; got "
+                                (pr-str x)))))
+  (let [[nm t & cs] x
+        head [(plain-name op nm) (type-name op t)]
+        [texts _] (reduce (fn [[acc prev] c]
+                            (when (and (action-form? c)
+                                       (not (or (references-form? prev) (action-form? prev)
+                                                (and (vector? prev) (= :constraint (kw (first prev)))
+                                                     (references-form? (nth prev 2 nil))))))
+                              (throw (u/format-error op c
+                                                     (str (pr-str (first c)) " follows the [:references ...]"
+                                                          " constraint it belongs to, as in"
+                                                          " [:did :integer [:references :d :id]"
+                                                          " [:on-delete :cascade]]"))))
+                            [(conj acc (column-constraint ctx op c)) c])
+                          [head nil]
+                          cs)]
+    (str/join " " texts)))
+
+(def ^:private table-constraint-heads
+  [:check :constraint :foreign-key :primary-key :unique])
+
+(defn- key-columns
+  [op x cols]
+  (when (empty? cols)
+    (throw (u/format-error op x (str (pr-str (first x)) " needs at least one column, got " (pr-str x)))))
+  (str "(" (str/join ", " (mapv #(plain-name op %) cols)) ")"))
+
+(defn- foreign-key
+  "[:foreign-key columns [:references t & columns] & actions] -> FOREIGN KEY
+   (a, b) REFERENCES t (c, d) ON DELETE ... ON UPDATE ...; columns is one
+   name or a vector of names."
+  [op x]
+  (let [[_ cols refs & actions] x
+        cols (cond
+               (or (u/entity? cols) (u/raw? cols)) [cols]
+               (sequential? cols) (vec cols)
+               :else (throw (u/format-error op x
+                                            (str "[:foreign-key columns [:references ...]]: columns is a"
+                                                 " name or a vector of names, got " (pr-str cols)))))]
+    (when-not (references-form? refs)
+      (throw (u/format-error op x
+                             (str "a foreign key is [:foreign-key columns [:references table & columns]"
+                                  " & actions], got " (pr-str x)))))
+    (doseq [a actions]
+      (when-not (action-form? a)
+        (throw (u/format-error op a
+                               (str "after the references of a foreign key come only [:on-delete action]"
+                                    " and [:on-update action], got " (pr-str a))))))
+    (str "FOREIGN KEY " (key-columns op x cols) " " (references op refs)
+         (apply str (mapv #(str " " (referential-action op %)) actions)))))
+
+(defn- table-constraint
+  "One table constraint of CREATE TABLE: [:primary-key & cols], [:unique &
+   cols], [:check expr], [:foreign-key ...], [:constraint name constraint],
+   or a raw fragment."
+  [ctx op x]
+  (cond
+    (u/raw? x) (u/raw-sql x)
+
+    (and (vector? x) (seq x))
+    (case (kw (first x))
+      :primary-key (str "PRIMARY KEY " (key-columns op x (rest x)))
+      :unique (str "UNIQUE " (key-columns op x (rest x)))
+      :check (check-constraint ctx op x)
+      :foreign-key (foreign-key op x)
+      :constraint (named-constraint ctx op x table-constraint)
+      (throw (u/format-error op x
+                             (str "unknown table constraint " (pr-str (first x))
+                                  "; a table constraint starts with one of the keys listed under :allowed")
+                             {:allowed table-constraint-heads})))
+
+    :else
+    (throw (u/format-error op x
+                           (str "a table constraint is a vector such as [:primary-key :a :b],"
+                                " [:unique :c], [:check [:> :a 0]], [:foreign-key :d [:references :e :id]]"
+                                " or [:constraint :name ...], or a raw fragment; got " (pr-str x))))))
+
+(defn- emit-create-table
+  [ctx m k]
+  (let [cols (mapv #(column-definition ctx :columns %) (list-of :columns (:columns m)))
+        constraints (when (contains? m :constraints)
+                      (mapv #(table-constraint ctx :constraints %)
+                            (list-of :constraints (:constraints m))))]
+    (str "CREATE TABLE " (when (flag m :if-not-exists) "IF NOT EXISTS ")
+         (target-base k (get m k))
+         " (" (str/join ", " (into cols constraints)) ")")))
+
+;; DROP TABLE, DROP INDEX, DROP VIEW
+
+(defn- drop-behavior
+  [m k]
+  (when (and (flag m :cascade) (flag m :restrict))
+    (throw (u/format-error k (select-keys m [:cascade :restrict])
+                           ":cascade and :restrict cannot both be true")))
+  (cond
+    (flag m :cascade) " CASCADE"
+    (flag m :restrict) " RESTRICT"
+    :else nil))
+
+(defn- emit-drop
+  [word]
+  (fn [_ctx m k]
+    (let [names (list-of k (get m k))
+          concurrently? (flag m :concurrently)]
+      (when concurrently?
+        (when (flag m :cascade)
+          (throw (u/format-error k (select-keys m [:concurrently :cascade])
+                                 "DROP INDEX CONCURRENTLY does not support CASCADE")))
+        (when (< 1 (count names))
+          (throw (u/format-error k (get m k)
+                                 (str "DROP INDEX CONCURRENTLY drops exactly one index, got "
+                                      (pr-str (get m k)))))))
+      (str "DROP " word
+           (when concurrently? " CONCURRENTLY")
+           (when (flag m :if-exists) " IF EXISTS")
+           " " (str/join ", " (mapv #(target-base k %) names))
+           (drop-behavior m k)))))
+
+;; ALTER TABLE
+
+(def ^:private alter-actions [:add-column :drop-column :rename-column])
+
+(defn- action-flags
+  "The set of flag keywords after the arguments of an action, each at most
+   once and among allowed."
+  [op x flags allowed]
+  (reduce (fn [acc f]
+            (let [f (kw f)]
+              (when-not (contains? (set allowed) f)
+                (throw (u/format-error op f
+                                       (str "unknown option " (pr-str f) " in " (pr-str x)
+                                            "; the options of " (pr-str op) " are listed under :allowed")
+                                       {:allowed allowed})))
+              (when (contains? acc f)
+                (throw (u/format-error op x (str (pr-str f) " is given twice in " (pr-str x)))))
+              (conj acc f)))
+          #{}
+          flags))
+
+(defn- alter-action
+  [ctx k x]
+  (when-not (and (vector? x) (seq x))
+    (throw (u/format-error k x
+                           (str "an action of :actions is [:add-column [name type & constraints]"
+                                " & options], [:drop-column name & options] or"
+                                " [:rename-column old new]; got " (pr-str x)))))
+  (let [a (kw (first x))]
+    (case a
+      :add-column
+      (do (when (< (count x) 2)
+            (throw (u/format-error a x "[:add-column [name type & constraints] & options] needs the column definition")))
+          (let [flags (action-flags a x (nnext x) [:if-not-exists])]
+            (str "ADD COLUMN " (when (:if-not-exists flags) "IF NOT EXISTS ")
+                 (column-definition ctx a (second x)))))
+
+      :drop-column
+      (do (when (< (count x) 2)
+            (throw (u/format-error a x "[:drop-column name & options] needs the column name")))
+          (let [flags (action-flags a x (nnext x) [:if-exists :cascade :restrict])]
+            (when (and (:cascade flags) (:restrict flags))
+              (throw (u/format-error a x ":cascade and :restrict cannot both be given")))
+            (str "DROP COLUMN " (when (:if-exists flags) "IF EXISTS ")
+                 (plain-name a (second x))
+                 (when (:cascade flags) " CASCADE")
+                 (when (:restrict flags) " RESTRICT"))))
+
+      :rename-column
+      (do (when-not (= 3 (count x))
+            (throw (u/format-error a x (str "[:rename-column old new] takes exactly two names, got " (pr-str x)))))
+          (str "RENAME COLUMN " (plain-name a (second x)) " TO " (plain-name a (nth x 2))))
+
+      (throw (u/format-error k x
+                             (str "unknown action " (pr-str (first x))
+                                  "; the actions are listed under :allowed")
+                             {:allowed alter-actions})))))
+
+(defn- emit-alter-table
+  [ctx m k]
+  (let [actions (list-of :actions (:actions m))
+        rename? (some #(and (vector? %) (= :rename-column (kw (first %)))) actions)]
+    (when (and rename? (< 1 (count actions)))
+      (throw (u/format-error :actions (:actions m)
+                             "RENAME COLUMN is a form of its own and cannot be combined with other actions")))
+    (str "ALTER TABLE " (when (flag m :if-exists) "IF EXISTS ")
+         (target-base k (get m k)) " "
+         (str/join ", " (mapv #(alter-action ctx :actions %) actions)))))
+
+;; CREATE INDEX
+
+(defn- index-method
+  [m]
+  (let [v (:using m)
+        v (if (and (sequential? v) (= 1 (count v))) (first v) v)]
+    (cond
+      (u/entity? v) (u/entity-name :using v false)
+      (u/raw? v) (u/raw-sql v)
+      :else (throw (u/format-error :using v
+                                   (str ":using in :create-index is one index method, :btree, :hash,"
+                                        " :gist, :spgist, :gin or :brin; got " (pr-str v)))))))
+
+(defn- index-column
+  "An item of the CREATE INDEX column list: an :order-by item whose
+   expression is a column, an expression vector or a raw fragment, never a
+   value."
+  [ctx x]
+  (let [e (if (and (vector? x) (seq x)) (first x) x)]
+    (when-not (or (u/entity? e) (u/raw? e) (vector? e))
+      (throw (u/format-error :columns e
+                             (str "an index column is a column name, an expression vector"
+                                  " ([[:lower :email]]) or a raw fragment, got " (pr-str e)
+                                  (when (string? e) " (strings are values, never names)"))))))
+  (order-item ctx :columns x true))
+
+(defn- emit-create-index
+  [ctx m k]
+  (let [nm (get m k)]
+    (when (and (nil? nm) (flag m :if-not-exists))
+      (throw (u/format-error k m "CREATE INDEX IF NOT EXISTS needs an index name; an unnamed index (:create-index nil) cannot be conditional")))
+    (str "CREATE " (when (flag m :unique) "UNIQUE ") "INDEX"
+         (when (flag m :concurrently) " CONCURRENTLY")
+         (when (flag m :if-not-exists) " IF NOT EXISTS")
+         (when (some? nm) (str " " (plain-name k nm)))
+         " ON " (target-base :on (:on m))
+         (when (contains? m :using) (str " USING " (index-method m)))
+         " (" (str/join ", " (mapv #(index-column ctx %) (list-of :columns (:columns m)))) ")")))
+
+;; CREATE VIEW
+
+(defn- emit-create-view
+  [ctx m k]
+  (let [body (:as m)]
+    (str "CREATE " (when (flag m :or-replace) "OR REPLACE ") "VIEW "
+         (target-base k (get m k))
+         (when (contains? m :columns)
+           (str " (" (str/join ", " (mapv #(plain-name :columns %) (list-of :columns (:columns m)))) ")"))
+         " AS "
+         (cond
+           (map? body) (statement ctx body)
+           (u/raw? body) (u/raw-sql body)
+           :else (throw (u/format-error :as body
+                                        (str "the body of a view (:as) is a statement map, {:select ...},"
+                                             " or a raw fragment, got " (pr-str body))))))))
+
+;; ---------------------------------------------------------------------------
 ;; Statements
 ;; ---------------------------------------------------------------------------
 
@@ -943,7 +1437,14 @@
    :set emit-set
    :delete-from emit-delete-from
    :using emit-using
-   :truncate emit-truncate})
+   :truncate emit-truncate
+   :create-table emit-create-table
+   :drop-table (emit-drop "TABLE")
+   :alter-table emit-alter-table
+   :create-index emit-create-index
+   :drop-index (emit-drop "INDEX")
+   :create-view emit-create-view
+   :drop-view (emit-drop "VIEW")})
 
 (def ^:private set-operation-clauses
   [:with :with-recursive :union :union-all :order-by :limit :offset])
@@ -952,8 +1453,9 @@
   "Per statement head: :order, the emitting clauses of that statement kind
    in emission order (the PostgreSQL synopsis order); :modifiers, the keys
    another clause's emitter consumes; :required, the clauses the head cannot
-   do without. A key outside :order and :modifiers is not accepted next to
-   that head."
+   do without; :inline-literals, true for data definition, whose literals
+   are always spelled out (DDL takes no parameters). A key outside :order
+   and :modifiers is not accepted next to that head."
   {:select {:order [:with :with-recursive :select :from :join :inner-join :left-join :right-join
                     :full-join :cross-join :where :group-by :having :order-by :limit :offset :for]
             :modifiers #{:distinct :distinct-on}}
@@ -966,11 +1468,37 @@
             :required [:set]}
    :delete-from {:order [:with :with-recursive :delete-from :using :where :returning]}
    :truncate {:order [:truncate]
-              :modifiers #{:restart-identity :continue-identity :cascade :restrict}}})
+              :modifiers #{:restart-identity :continue-identity :cascade :restrict}}
+   :create-table {:order [:create-table]
+                  :modifiers #{:if-not-exists :columns :constraints}
+                  :required [:columns]
+                  :inline-literals true}
+   :drop-table {:order [:drop-table]
+                :modifiers #{:if-exists :cascade :restrict}
+                :inline-literals true}
+   :alter-table {:order [:alter-table]
+                 :modifiers #{:if-exists :actions}
+                 :required [:actions]
+                 :inline-literals true}
+   :create-index {:order [:create-index :where]
+                  :modifiers #{:unique :concurrently :if-not-exists :on :using :columns}
+                  :required [:on :columns]
+                  :inline-literals true}
+   :drop-index {:order [:drop-index]
+                :modifiers #{:concurrently :if-exists :cascade :restrict}
+                :inline-literals true}
+   :create-view {:order [:create-view]
+                 :modifiers #{:or-replace :columns :as}
+                 :required [:as]
+                 :inline-literals true}
+   :drop-view {:order [:drop-view]
+               :modifiers #{:if-exists :cascade :restrict}
+               :inline-literals true}})
 
 (def ^:private heads
   "The statement heads, in the order the one-head check reports them."
-  [:select :union :union-all :insert-into :update :delete-from :truncate])
+  [:select :union :union-all :insert-into :update :delete-from :truncate
+   :create-table :drop-table :alter-table :create-index :drop-index :create-view :drop-view])
 
 (def ^:private clause-keys
   "Every clause key of every statement kind."
@@ -1018,13 +1546,14 @@
       (when-not (contains? m k)
         (throw (u/format-error head m
                                (str (pr-str head) " needs " (pr-str k) ", got " (pr-str (vec (keys m))))))))
-    (str/join " "
-              (reduce (fn [acc k]
-                        (if (contains? m k)
-                          (conj acc ((get clause-emitters k) ctx m k))
-                          acc))
-                      []
-                      (:order kind)))))
+    (let [ctx (if (:inline-literals kind) (assoc ctx :inline? true) ctx)]
+      (str/join " "
+                (reduce (fn [acc k]
+                          (if (contains? m k)
+                            (conj acc ((get clause-emitters k) ctx m k))
+                            acc))
+                        []
+                        (:order kind))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Entry point
@@ -1045,7 +1574,8 @@
      ±Infinity and any other value (an object, a date) are a format-error.
      Inline text is for SQL consoles and debugging only: it is built from
      caller data with no server-side protection, so inlining untrusted input
-     is SQL injection.
+     is SQL injection. Data definition statements are rendered this way in
+     both modes: DDL takes no parameters, so their :values is always [].
 
    Anything malformed (a value where a name is required, a mixed-case or
    exotic entity, an unknown clause or operator, an empty :select, an

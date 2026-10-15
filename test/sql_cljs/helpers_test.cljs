@@ -180,3 +180,100 @@
     (is (= {:select ["a"]} (h/select "a")))
     (is (= [:select "a"] ((juxt :op :arg) (try (sql/format (h/select "a")) nil (catch :default e (ex-data e))))))
     (is (= [:update {:update :t}] ((juxt :op :arg) (try (sql/format (h/update :t)) nil (catch :default e (ex-data e))))))))
+
+;; ---------------------------------------------------------------------------
+;; Data definition helpers
+;; ---------------------------------------------------------------------------
+
+(deftest ddl-helpers
+  (testing "create-table, if-not-exists, columns, constraints"
+    (is (= {:create-table :t} (h/create-table :t)))
+    (is (= {:if-not-exists true} (h/if-not-exists)))
+    (is (= {:columns [[:id :serial :primary-key] [:name [:varchar 40] :not-null]]}
+           (h/columns [:id :serial :primary-key] [:name [:varchar 40] :not-null])))
+    (is (= {:constraints [[:primary-key :a :b]]} (h/constraints [:primary-key :a :b])))
+    (is (= {:constraints [[:unique :a] [:check [:> :a 0]]]} (h/constraints [:unique :a] [:check [:> :a 0]]))))
+  (testing "drop-table, if-exists"
+    (is (= {:drop-table [:t]} (h/drop-table :t)))
+    (is (= {:drop-table [:t :u]} (h/drop-table :t :u)))
+    (is (= {:if-exists true} (h/if-exists))))
+  (testing "alter-table and its actions"
+    (is (= {:alter-table :t} (h/alter-table :t)))
+    (is (= {:actions [[:add-column [:x :int]]]} (h/add-column [:x :int])))
+    (is (= {:actions [[:add-column [:x :int :not-null] :if-not-exists]]} (h/add-column [:x :int :not-null] :if-not-exists)))
+    (is (= {:actions [[:drop-column :x]]} (h/drop-column :x)))
+    (is (= {:actions [[:drop-column :x :if-exists :cascade]]} (h/drop-column :x :if-exists :cascade)))
+    (is (= {:actions [[:rename-column :a :b]]} (h/rename-column :a :b))))
+  (testing "create-index, unique, concurrently, on, using, columns, where"
+    (is (= {:create-index :i} (h/create-index :i)))
+    (is (= {:create-index nil} (h/create-index)))
+    (is (= {:unique true} (h/unique)))
+    (is (= {:concurrently true} (h/concurrently)))
+    (is (= {:on :t} (h/on :t)))
+    (is (= {:using [:gin]} (h/using :gin)))
+    (is (= {:columns [:a [:b :desc]]} (h/columns :a [:b :desc])))
+    (is (= {:where [:= :kind "x"]} (h/where [:= :kind "x"]))))
+  (testing "drop-index, create-view, or-replace, as, drop-view"
+    (is (= {:drop-index [:i]} (h/drop-index :i)))
+    (is (= {:drop-index [:i :j]} (h/drop-index :i :j)))
+    (is (= {:create-view :v} (h/create-view :v)))
+    (is (= {:or-replace true} (h/or-replace)))
+    (is (= {:as {:select [:a] :from [:t]}} (h/as {:select [:a] :from [:t]})))
+    (is (= {:as (sql/raw "SELECT 1")} (h/as (sql/raw "SELECT 1"))))
+    (is (= {:drop-view [:v]} (h/drop-view :v)))
+    (is (= {:drop-view [:v :w]} (h/drop-view :v :w)))))
+
+(deftest ddl-helpers-thread-and-merge
+  (testing "a leading map threads; columns, constraints and actions concatenate; flags and scalars replace"
+    (is (= {:create-table :t :if-not-exists true :columns [[:id :serial :primary-key] [:name :text]] :constraints [[:unique :name]]}
+           (-> (h/create-table :t) (h/if-not-exists) (h/columns [:id :serial :primary-key]) (h/columns [:name :text]) (h/constraints [:unique :name]))))
+    (is (= {:alter-table :t :if-exists true :actions [[:add-column [:a :int]] [:drop-column :b :if-exists] [:add-column [:c :text] :if-not-exists]]}
+           (-> (h/alter-table :t) (h/if-exists) (h/add-column [:a :int]) (h/drop-column :b :if-exists) (h/add-column [:c :text] :if-not-exists))))
+    (is (= {:alter-table :t :actions [[:rename-column :a :b]]} (-> (h/alter-table :t) (h/rename-column :a :b))))
+    (is (= {:create-index :i :unique true :concurrently true :on :t :using [:gin] :columns [:a [:b :desc]] :where [:and [:= :kind "x"] [:> :n 1]]}
+           (-> (h/create-index :i) (h/unique) (h/concurrently) (h/on :t) (h/using :gin) (h/columns :a [:b :desc]) (h/where [:= :kind "x"]) (h/where [:> :n 1]))))
+    (is (= {:on :t :columns [:a] :create-index nil} (-> (h/on :t) (h/columns :a) (h/create-index))))
+    (is (= {:create-index :j} (-> (h/create-index :i) (h/create-index :j))))
+    (is (= {:drop-index [:i :j] :concurrently true} (-> (h/drop-index :i) (h/drop-index :j) (h/concurrently))))
+    (is (= {:create-view :v :or-replace true :columns [:x :y] :as {:select [:a :b] :from [:t]}}
+           (-> (h/create-view :v) (h/or-replace) (h/columns :x :y) (h/as (-> (h/select :a :b) (h/from :t))))))
+    (is (= {:drop-view [:v :w] :if-exists true :cascade true} (-> (h/drop-view :v :w) (h/if-exists) (h/cascade))))
+    (is (= {:drop-table [:t] :restrict true} (-> (h/drop-table :t) (h/restrict) (h/restrict))))
+    (is (= {:create-table :t :columns [[:a :int]]} (merge (h/create-table :t) (h/columns [:a :int]))))))
+
+(deftest ddl-helpers-format-like-literal-maps
+  (testing "a table"
+    (let [built (-> (h/create-table :films) (h/if-not-exists)
+                    (h/columns [:code [:char 5] [:constraint :firstkey :primary-key]] [:title [:varchar 40] :not-null]
+                               [:did :integer [:references :distributors :did] [:on-delete :cascade]] [:kind :text [:default "drama"]])
+                    (h/constraints [:constraint :production [:unique :title :did]] [:check [:<> :title ""]]))
+          literal {:create-table :films :if-not-exists true
+                   :columns [[:code [:char 5] [:constraint :firstkey :primary-key]] [:title [:varchar 40] :not-null]
+                             [:did :integer [:references :distributors :did] [:on-delete :cascade]] [:kind :text [:default "drama"]]]
+                   :constraints [[:constraint :production [:unique :title :did]] [:check [:<> :title ""]]]}]
+      (is (= literal built))
+      (is (= {:text "CREATE TABLE IF NOT EXISTS films (code CHAR(5) CONSTRAINT firstkey PRIMARY KEY, title VARCHAR(40) NOT NULL, did INTEGER REFERENCES distributors (did) ON DELETE CASCADE, kind TEXT DEFAULT 'drama', CONSTRAINT production UNIQUE (title, did), CHECK (title <> ''))"
+              :values []}
+             (sql/format built)
+             (sql/format literal)))))
+  (testing "an alter, a drop"
+    (is (= {:text "ALTER TABLE IF EXISTS t ADD COLUMN IF NOT EXISTS a INT, DROP COLUMN IF EXISTS b CASCADE" :values []}
+           (sql/format (-> (h/alter-table :t) (h/if-exists) (h/add-column [:a :int] :if-not-exists) (h/drop-column :b :if-exists :cascade)))))
+    (is (= "ALTER TABLE t RENAME COLUMN a TO b" (:text (sql/format (-> (h/alter-table :t) (h/rename-column :a :b))))))
+    (is (= {:text "DROP TABLE IF EXISTS t, u CASCADE" :values []}
+           (sql/format (-> (h/drop-table :t :u) (h/if-exists) (h/cascade))))))
+  (testing "an index, its drop"
+    (let [built (-> (h/create-index :i) (h/unique) (h/on :t) (h/using :gin) (h/columns :a [:b :desc :nulls-last]) (h/where [:is-null :deleted_at]))]
+      (is (= {:text "CREATE UNIQUE INDEX i ON t USING gin (a, b DESC NULLS LAST) WHERE deleted_at IS NULL" :values []}
+             (sql/format built)
+             (sql/format {:create-index :i :unique true :on :t :using :gin :columns [:a [:b :desc :nulls-last]] :where [:is-null :deleted_at]}))))
+    (is (= "CREATE INDEX ON t (a)" (:text (sql/format (-> (h/on :t) (h/columns :a) (h/create-index))))))
+    (is (= "DROP INDEX CONCURRENTLY IF EXISTS i" (:text (sql/format (-> (h/drop-index :i) (h/concurrently) (h/if-exists)))))))
+  (testing "a view, its drop"
+    (is (= {:text "CREATE OR REPLACE VIEW v (x) AS SELECT a FROM t WHERE kind = 'x'" :values []}
+           (sql/format (-> (h/create-view :v) (h/or-replace) (h/columns :x) (h/as (-> (h/select :a) (h/from :t) (h/where [:= :kind "x"])))))))
+    (is (= "DROP VIEW IF EXISTS v RESTRICT" (:text (sql/format (-> (h/drop-view :v) (h/if-exists) (h/restrict)))))))
+  (testing "malformed helper data fails at format time, not in the helper"
+    (is (= {:columns [[:a "text"]]} (h/columns [:a "text"])))
+    (is (= [:columns "text"] ((juxt :op :arg) (try (sql/format (-> (h/create-table :t) (h/columns [:a "text"]))) nil (catch :default e (ex-data e))))))
+    (is (= [:alter-table {:alter-table :t}] ((juxt :op :arg) (try (sql/format (h/alter-table :t)) nil (catch :default e (ex-data e))))))))

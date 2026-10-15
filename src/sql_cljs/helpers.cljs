@@ -17,7 +17,12 @@
    the statement, a subquery given as a clause item is written nested,
    (select [[{:select [:a] :from [:u]} :n]]) or (from [[{...} :s]]); the
    set-operation helpers union and union-all are the one exception: their
-   arguments are all operands and they never thread.
+   arguments are all operands and they never thread. The data definition
+   helpers follow the same pattern: (-> (create-table :t) (columns [:id
+   :serial :primary-key]) (if-not-exists)) is {:create-table :t :columns
+   [[:id :serial :primary-key]] :if-not-exists true}, and the alter-table
+   actions add-column, drop-column and rename-column concatenate into
+   :actions.
 
    The helpers validate nothing: they shape data only, and malformed data
    is reported by format as a :sql-cljs/format-error. Clojure's own
@@ -143,7 +148,8 @@
 
 (defn where
   "{:where predicate}: (where [:= :a 1]) is {:where [:= :a 1]}; several
-   predicates, or a repeated where, combine as [:and ...]."
+   predicates, or a repeated where, combine as [:and ...]. Next to
+   create-index it is the partial-index predicate."
   [& args]
   (condition :where args))
 
@@ -213,7 +219,10 @@
   (scalar :insert-into args))
 
 (defn columns
-  "{:columns [columns...]}: (columns :a :b) is {:columns [:a :b]}."
+  "{:columns [columns...]}: (columns :a :b) is {:columns [:a :b]}, the
+   column list of INSERT or of CREATE VIEW; for CREATE TABLE the items are
+   column definitions, (columns [:id :serial :primary-key] [:name :text]),
+   and for CREATE INDEX they are :order-by items, (columns :a [:b :desc])."
   [& args]
   (items :columns args))
 
@@ -299,7 +308,8 @@
   (scalar :delete-from args))
 
 (defn using
-  "{:using [tables...]}: the USING tables of DELETE, as in from."
+  "{:using [tables...]}: the USING tables of DELETE, as in from; next to
+   create-index, (using :gin) names the index method (one item)."
   [& args]
   (items :using args))
 
@@ -319,11 +329,129 @@
   (flag :continue-identity args))
 
 (defn cascade
-  "{:cascade true}: TRUNCATE ... CASCADE."
+  "{:cascade true}: TRUNCATE, DROP TABLE / INDEX / VIEW ... CASCADE."
   [& args]
   (flag :cascade args))
 
 (defn restrict
-  "{:restrict true}: TRUNCATE ... RESTRICT."
+  "{:restrict true}: TRUNCATE, DROP TABLE / INDEX / VIEW ... RESTRICT."
   [& args]
   (flag :restrict args))
+
+;; ---------------------------------------------------------------------------
+;; Data definition
+;; ---------------------------------------------------------------------------
+
+(defn create-table
+  "{:create-table table}: (create-table :t) is {:create-table :t}. The
+   column definitions come from columns, (columns [:id :serial :primary-key]
+   [:name [:varchar 40] :not-null]), the table constraints from constraints."
+  [& args]
+  (scalar :create-table args))
+
+(defn if-not-exists
+  "{:if-not-exists true}: CREATE TABLE / INDEX ... IF NOT EXISTS."
+  [& args]
+  (flag :if-not-exists args))
+
+(defn constraints
+  "{:constraints [constraints...]}: the table constraints of CREATE TABLE,
+   (constraints [:primary-key :a :b] [:unique :c]) is
+   {:constraints [[:primary-key :a :b] [:unique :c]]}. Repeated, they
+   concatenate."
+  [& args]
+  (items :constraints args))
+
+(defn drop-table
+  "{:drop-table [tables...]}: (drop-table :t :u) is {:drop-table [:t :u]}."
+  [& args]
+  (items :drop-table args))
+
+(defn if-exists
+  "{:if-exists true}: DROP TABLE / INDEX / VIEW, ALTER TABLE ... IF EXISTS."
+  [& args]
+  (flag :if-exists args))
+
+(defn alter-table
+  "{:alter-table table}: (alter-table :t) is {:alter-table :t}; the actions
+   come from add-column, drop-column and rename-column, which concatenate
+   into :actions."
+  [& args]
+  (scalar :alter-table args))
+
+(defn add-column
+  "{:actions [[:add-column definition & options]]}: (add-column [:x :int])
+   is {:actions [[:add-column [:x :int]]]}, (add-column [:x :int]
+   :if-not-exists) adds the option. The definition is ONE argument, the
+   column vector of create-table."
+  [& args]
+  (let [[m xs] (leading-map args)]
+    (merge-clause m :actions [(into [:add-column] xs)])))
+
+(defn drop-column
+  "{:actions [[:drop-column name & options]]}: (drop-column :x) is
+   {:actions [[:drop-column :x]]}, (drop-column :x :if-exists :cascade) adds
+   the options."
+  [& args]
+  (let [[m xs] (leading-map args)]
+    (merge-clause m :actions [(into [:drop-column] xs)])))
+
+(defn rename-column
+  "{:actions [[:rename-column old new]]}: (rename-column :a :b) is
+   {:actions [[:rename-column :a :b]]}."
+  [& args]
+  (let [[m xs] (leading-map args)]
+    (merge-clause m :actions [(into [:rename-column] xs)])))
+
+(defn create-index
+  "{:create-index name}: (create-index :i) is {:create-index :i};
+   (create-index) is {:create-index nil}, an unnamed index. A leading map
+   threads: (create-index m :i), or (create-index m) for an unnamed index.
+   The table comes from on, the columns from columns, the method from
+   using, the predicate from where."
+  [& args]
+  (let [[m [nm]] (leading-map args)]
+    (merge-clause m :create-index nm)))
+
+(defn unique
+  "{:unique true}: CREATE UNIQUE INDEX."
+  [& args]
+  (flag :unique args))
+
+(defn concurrently
+  "{:concurrently true}: CREATE INDEX / DROP INDEX ... CONCURRENTLY."
+  [& args]
+  (flag :concurrently args))
+
+(defn on
+  "{:on table}: the table of CREATE INDEX, (on :t) is {:on :t}."
+  [& args]
+  (scalar :on args))
+
+(defn drop-index
+  "{:drop-index [indexes...]}: (drop-index :i :j) is {:drop-index [:i :j]}."
+  [& args]
+  (items :drop-index args))
+
+(defn create-view
+  "{:create-view view}: (create-view :v) is {:create-view :v}; the body
+   comes from as, the optional column names from columns."
+  [& args]
+  (scalar :create-view args))
+
+(defn or-replace
+  "{:or-replace true}: CREATE OR REPLACE VIEW."
+  [& args]
+  (flag :or-replace args))
+
+(defn as
+  "{:as body}: the body of CREATE VIEW, ONE argument, a statement map or a
+   raw fragment: (as {:select [:a] :from [:t]}) is
+   {:as {:select [:a] :from [:t]}}; (as m {...}) threads."
+  [& args]
+  (scalar :as args))
+
+(defn drop-view
+  "{:drop-view [views...]}: (drop-view :v :w) is {:drop-view [:v :w]}."
+  [& args]
+  (items :drop-view args))

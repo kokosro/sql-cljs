@@ -58,7 +58,7 @@ HoneySQL 2.x (https://github.com/seancorfield/honeysql) is the DESIGN REFERENCE 
   so a later phase can add them without surprises), =FOR NO KEY UPDATE= / =FOR KEY
   SHARE= (recorded in 2.11; decision in 15.9), =MATERIALIZED= / =NOT MATERIALIZED=
   CTEs, =SEARCH= / =CYCLE=, =MERGE=.
-- =INSERT ... DEFAULT VALUES=, =OVERRIDING ... VALUE=, =ON CONFLICT ON CONSTRAINT=,
+- =INSERT ... DEFAULT VALUES=, =OVERRIDING ... VALUE=,
   =RETURNING WITH (OLD | NEW)=, =WHERE CURRENT OF=, =UPDATE= row-constructor and
   sub-select =SET= forms.
 - DDL beyond the list above: =TEMPORARY= / =UNLOGGED=, =INHERITS=, =PARTITION BY=,
@@ -974,8 +974,13 @@ Note the alias: =INSERT INTO table_name AS alias= — =AS= is NOT optional here,
   partial indexes) can be inferred. Follows =CREATE INDEX= format."
 - "It is often preferable to use unique index inference rather than naming a
   constraint directly using =ON CONFLICT ON CONSTRAINT= /constraint_name/."
-  =ON CONSTRAINT= is out of scope. "In all cases, only =NOT DEFERRABLE= constraints
-  and unique indexes are supported as arbiters."
+  =ON CONFLICT ON CONSTRAINT= IS in scope for sql-cljs: the =:on-constraint= key of
+  =:on-conflict= (implemented in Phase 2, kept by decision 109BA8DB on 2026-10-15,
+  which reversed the "out of scope" line this one replaces). The documentation's
+  sentence is a preference note, not a limitation: both arbiter forms are exposed
+  and the caller picks, the library chooses nothing; the manual repeats the
+  preference as guidance. "In all cases, only =NOT DEFERRABLE= constraints and unique
+  indexes are supported as arbiters."
 - /conflict_action/: "It can be either =DO NOTHING=, or a =DO UPDATE= clause
   specifying the exact details of the =UPDATE= action to be performed in case of a
   conflict. The =SET= and =WHERE= clauses in =ON CONFLICT DO UPDATE= have access to
@@ -1201,9 +1206,11 @@ are comma-separated inside one pair of parentheses.
 - /data_type/: "The data type of the column. This can include array specifiers." A
   type name is an identifier or a key-word type (=integer=, =varchar(40)=, =char(5)=,
   =interval hour to minute=, =timestamp with time zone=, =text[]=): type syntax is
-  richer than an identifier, so sql-cljs takes it as a KEYWORD rendered as its name
-  for the simple case and as a =raw=-like string for parameterized types (decision
-  14.11).
+  richer than an identifier, so sql-cljs takes it as a KEYWORD rendered upper-case
+  (=:text=, =:double-precision= for the multi-word types, the =-= becoming a space),
+  a VECTOR =[keyword & numbers]= for the parameterized types (=[:varchar 40]=) and a
+  =raw= fragment for the rest (array types, =interval hour to minute=); a string is
+  a value, never a type (14.11, 15.18; Phase 3 pinned the spellings).
 - =DEFAULT default_expr=: "The value is any variable-free expression (in particular,
   cross-references to other columns in the current table are not allowed).
   Subqueries are not allowed either. The data type of the default expression must
@@ -1385,10 +1392,14 @@ CREATE [ UNIQUE ] INDEX [ CONCURRENTLY ] [ [ IF NOT EXISTS ] name ] ON [ ONLY ] 
 - Examples from the page: =CREATE UNIQUE INDEX title_idx ON films (title);=, =CREATE
   INDEX ON films ((lower(title)));= (expression index, double parentheses), =CREATE
   INDEX CONCURRENTLY sales_quantity_index ON sales_table (quantity);=.
-- Scope: =UNIQUE=, =IF NOT EXISTS=, name, =ON table=, =USING method=, column list
-  (plain columns), =WHERE= partial predicate. =INCLUDE=, =COLLATE=, =opclass=,
-  =NULLS DISTINCT=, =WITH=, =TABLESPACE=, expression columns and per-column
-  =ASC=/=DESC= are out of scope (per-column order is 15.13).
+- Scope: =UNIQUE=, =CONCURRENTLY= (15.10), =IF NOT EXISTS=, name (or none: the
+  unnamed form =CREATE INDEX ON t (a)=), =ON table=, =USING method=, column list
+  with per-column =ASC= / =DESC= / =NULLS FIRST= / =LAST= (15.13) and expression
+  columns (a function call is emitted bare, =LOWER(title)=, any other operator
+  expression parenthesized, =(a + b)=, both as the page allows), =WHERE= partial
+  predicate. =INCLUDE=, =COLLATE=, =opclass=, =NULLS DISTINCT=, =WITH=, =TABLESPACE=
+  are out of scope. Phase 3 corrected this line: expression columns and per-column
+  order were first listed as out of scope and are in.
 
 ** 11.2 DROP INDEX =[SRC https://www.postgresql.org/docs/current/sql-dropindex.html]=
 #+begin_example
@@ -1713,44 +1724,69 @@ either). Parameter numbering continues across the nesting (14.2).
   CASCADE= (7). Decision: emit the optional =TABLE= word (the SQL-standard spelling).
 
 ** 14.11 CREATE TABLE (8)
-- =:create-table :t= (or =[:t :if-not-exists]=) + =:with-columns [[:id :serial
-  :primary-key] [:name [:varchar 40] :not-null] [:did :integer [:references :d :id]
-  [:on-delete :cascade]] [:price :numeric [:default 0]] [:kind :text [:check [:<> :kind
-  ""]]] [[:primary-key :a :b]] [[:unique :c]] [[:foreign-key :d] [:references :e
-  :id]] [[:constraint :con1] [:check ...]]]= → =CREATE TABLE IF NOT EXISTS t (id
-  SERIAL PRIMARY KEY, name VARCHAR(40) NOT NULL, ...)=. The exact column-definition
-  shape is Phase 3's to pin; the grammar facts it must honor: constraints follow the
-  type space-separated in any order (8.1); =CHECK= is always parenthesized;
-  =REFERENCES t(col)= with optional =ON DELETE= / =ON UPDATE= actions from the table
-  of 8.2; table constraints are comma-separated siblings of columns; =CONSTRAINT
-  name= prefixes a table constraint.
-- Type names: a keyword renders upper-case as a type word (=:integer= → =INTEGER=,
-  =:text= → =TEXT=); a vector =[:varchar 40]= → =VARCHAR(40)=, =[:numeric 10 2]= →
-  =NUMERIC(10, 2)=; multi-word types (=timestamp with time zone=, =double
-  precision=) and array types are =raw= strings or dedicated keywords (=:timestamptz=
-  works unquoted as the alias type name). Decision for Phase 3; 15.18.
-- =DEFAULT= values are inline literals (14.2); a =DEFAULT= that is a function call
-  (=[:now]=) renders =DEFAULT NOW()=.
+- The shape Phase 3 pinned: =:create-table :t= + =:if-not-exists true= + =:columns=,
+  a vector of column definitions =[name type & constraints]=, + =:constraints=, a
+  vector of table constraints: ={:create-table :t :if-not-exists true :columns [[:id
+  :serial :primary-key] [:name [:varchar 40] :not-null] [:did :integer [:references
+  :d :id] [:on-delete :cascade]] [:price :numeric [:default 0]] [:kind :text [:check
+  [:<> :kind ""]]]] :constraints [[:primary-key :a :b] [:unique :c] [:foreign-key :d
+  [:references :e :id] [:on-update :restrict]] [:constraint :con1 [:check ...]]]}=
+  → =CREATE TABLE IF NOT EXISTS t (id SERIAL PRIMARY KEY, name VARCHAR(40) NOT NULL,
+  did INTEGER REFERENCES d (id) ON DELETE CASCADE, price NUMERIC DEFAULT 0, kind TEXT
+  CHECK (kind <> ''), PRIMARY KEY (a, b), UNIQUE (c), FOREIGN KEY (d) REFERENCES e
+  (id) ON UPDATE RESTRICT, CONSTRAINT con1 CHECK (...))=. The grammar facts it
+  honors: column constraints follow the type space-separated in the order written
+  (8.1), and =[:on-delete ...]= / =[:on-update ...]= must follow the
+  =[:references ...]= they belong to (a format error otherwise); =CHECK= is always
+  parenthesized; =REFERENCES t (col)= with the actions of 8.2 (=:no-action=
+  =:restrict= =:cascade= =:set-null= =:set-default=; the column-subset forms of =SET
+  NULL= / =SET DEFAULT= are out, raw); table constraints are comma-separated siblings
+  after every column; =[:constraint :name constraint]= prefixes a column or a table
+  constraint with =CONSTRAINT name=; a raw fragment stands for any constraint the
+  shapes do not spell (=GENERATED=, =DEFERRABLE=, =EXCLUDE=). Names are plain
+  (unqualified) entities or raw; a value is never a name.
+- Type names (15.18, pinned): a keyword renders upper-case as a type word
+  (=:integer= → =INTEGER=, =:text= → =TEXT=, =:timestamptz= → =TIMESTAMPTZ=),
+  hyphenated keywords spell the multi-word types (=:double-precision= → =DOUBLE
+  PRECISION=, =:timestamp-with-time-zone= → =TIMESTAMP WITH TIME ZONE=); a vector
+  =[:varchar 40]= → =VARCHAR(40)=, =[:numeric 10 2]= → =NUMERIC(10, 2)= (arguments
+  are numbers); array types and anything else go through =raw= (=(raw "text[]")=);
+  a string type is a format error.
+- =DEFAULT= values are inline literals (14.2) in both modes; a =DEFAULT= that is a
+  function call (=[:now]=) renders =DEFAULT NOW()=; an operator expression is
+  parenthesized, =DEFAULT (1 + 2)=, which keeps it inside the grammar's restricted
+  =b_expr= slot. A subquery as a =DEFAULT= is rendered as written and rejected by
+  the server (8.2 says subqueries are not allowed): the formatter adds no check,
+  the engine renders what the caller wrote.
 
 ** 14.12 DROP TABLE, ALTER TABLE, indexes, views (9-12)
 - =:drop-table :t= / =[:t :u]= + =:if-exists true= + =:cascade true= → =DROP TABLE
   IF EXISTS t, u CASCADE= (9).
-- =:alter-table :t= + ONE of =:add-column [col-def]= (+ =:if-not-exists=),
-  =:drop-column :c= (+ =:if-exists=, =:cascade=), =:rename-column [:old :new]= →
-  =ALTER TABLE t ADD COLUMN ...= / =DROP COLUMN ...= / =RENAME COLUMN old TO new=
-  (10). Decision: emit the optional =COLUMN= word; one action per statement in
-  =0.1.0= (=RENAME= cannot combine anyway; multi-action =ADD=/=DROP= lists are a
-  later phase).
-- =:create-index :name= (or =[:name :if-not-exists]= / =:unique=) + =:on [:t :a :b]=
-  + =:using :gin= + =:where [...]= → =CREATE UNIQUE INDEX name ON t USING gin (a, b)
-  WHERE ...= (11.1; =USING= between the table and the column list; method name
-  lower-case as the documentation spells it, it is an identifier).
-  =:drop-index :name= + =:if-exists= + =:cascade= → =DROP INDEX IF EXISTS name
-  CASCADE= (11.2). =CONCURRENTLY= is 15.10.
-- =:create-view :v= (+ optional column list) + =:as {select-map}= → =CREATE VIEW v
-  (a, b) AS SELECT ...= with NO parentheses around the query (12.1). =:drop-view= as
-  =:drop-table= (12.2).
-- DDL statements produce =:values []= and inline their literals (14.2).
+- =:alter-table :t= + =:if-exists true= + =:actions=, a vector of action vectors
+  =[:add-column [name type & constraints] :if-not-exists]=, =[:drop-column :c
+  :if-exists :cascade|:restrict]=, =[:rename-column :old :new]= → =ALTER TABLE t ADD
+  COLUMN ..., DROP COLUMN ...= / =RENAME COLUMN old TO new= (10). Phase 3 pinned:
+  the optional =COLUMN= word is emitted; several =ADD= / =DROP= actions are
+  comma-separated in the order written (the page allows combining); =RENAME COLUMN=
+  alone in its statement (a format error next to another action). The sketch "one
+  action per statement" of Phase 0 is superseded.
+- =:create-index :name= (=nil= for the unnamed form) + =:unique true= +
+  =:concurrently true= + =:if-not-exists true= + =:on :t= + =:using :gin= +
+  =:columns [:a [:b :desc :nulls-last] [[:lower :c]]]= + =:where [...]= → =CREATE
+  UNIQUE INDEX CONCURRENTLY IF NOT EXISTS name ON t USING gin (a, b DESC NULLS LAST,
+  LOWER(c)) WHERE ...= (11.1; =USING= between the table and the column list; method
+  name lower-case as the documentation spells it, it is an identifier; =IF NOT
+  EXISTS= without a name is a format error, the page requires the name). The sketch
+  =:on [:t :a :b]= of Phase 0 is superseded by =:on :t= + =:columns=.
+  =:drop-index :name= (or a vector of names) + =:concurrently= + =:if-exists= +
+  =:cascade= / =:restrict= → =DROP INDEX CONCURRENTLY IF EXISTS name CASCADE= (11.2;
+  =CONCURRENTLY= with =:cascade= or with several names is a format error, 15.10).
+- =:create-view :v= + =:or-replace true= + =:columns [:a :b]= + =:as {select-map}=
+  (or raw) → =CREATE OR REPLACE VIEW v (a, b) AS SELECT ...= with NO parentheses
+  around the query (12.1). =:drop-view= as =:drop-table= (12.2).
+- DDL statements produce =:values []= and inline their literals (14.2), the view
+  body included: =:as {:select ... :where [:= :kind "x"]}= renders =kind = 'x'= in
+  parameter mode too (a view stores its query; it cannot carry parameters).
 
 ** 14.13 Helpers (13.1)
 One builder per clause: =(select & cols)=, =(from & tables)=, =(where & preds)=,
@@ -1788,21 +1824,21 @@ newlines. Every Phase 1-3 test pins the exact string.
 |---+-------------+------|
 | 15.1 | *Identifier quoting strategy.* PostgreSQL folds unquoted identifiers to lower case and only quoted identifiers preserve case (1.1, 1.2); reserved key words (=user=, =order=, =group=, =check=, =end=, ...) cannot be used unquoted as table or column names (1.3). The DSL currently has NO quoting rule: =:user= renders =user= and fails server-side; =:MyCol= renders =MyCol= and names =mycol=. HoneySQL's default is unquoted with an opt-in =:quoted true= (13.8). Options: (a) never quote (status quo, simplest, matches HoneySQL's default; the caller writes =(raw "\"user\"")=); (b) opt-in ={:quoted true}= that double-quotes every entity segment, doubling embedded quotes (1.2) — =:foo/bar= → ="foo"."bar"=, =:*= stays bare; (c) always quote. (c) changes every expected string and breaks the "foo.a" examples of the ruling; (b) is additive. | DECISION NEEDED from the orchestrator before Phase 1 pins strings. Recommendation: (a) for Phase 1 with the entity renderer isolated in one function (14.1), (b) added as an option in Phase 2 with its own exact-string tests; the manual documents the reserved-word list link and the fold rule either way. |
 | 15.2 | *Two-element vectors in =:select=.* HoneySQL: a vector at the top level of =:select= is always =[expr alias]= (="(select [:a :b]) means SELECT a AS b rather than SELECT a, b"=), and a function call with an alias is =[[:count :*] :total]= (13.4). The ambiguity: is =[:count :*]= at the top level of =:select= an alias pair ("count AS *") or a call? Under the HoneySQL rule it is an alias pair and renders nonsense. The owner ruling says "function calls in select ([:count :*] style)", which reads as the bare form. | DECISION NEEDED. Recommendation: adopt the HoneySQL rule verbatim (top-level vector in =:select= / =:from= / =:returning= = alias pair; functions nest: =[[:count :*] :n]= or =[[:count :*]]=), because it is unambiguous and documented upstream, AND make the alias position strict: the second element of a pair MUST be a keyword/symbol, so =[:count :*]= with =:*= as "alias" is rejected as a format error with a message naming the nested form — turning the likely mistake into a loud failure. Pinned by Phase 1 tests either way. |
-| 15.3 | Whether a =$N= parameter is legal inside DDL (=CREATE TABLE ... DEFAULT $1=, =CREATE INDEX ... WHERE a = $1=). The documentation says =DEFAULT= takes a "variable-free expression" (8.2) and positional parameters belong to prepared statements and function bodies (1.8); utility statements are not parameterizable in the extended protocol as far as the documentation goes, but it does not say so on these pages. | sql-cljs inlines all DDL literals (14.2) so the question never reaches the server. Verified live by the Phase 3 smoke (an =EXPLAIN= cannot cover DDL; the smoke creates and drops one temporary table) or recorded as "not attempted" if no server is available. |
+| 15.3 | Whether a =$N= parameter is legal inside DDL (=CREATE TABLE ... DEFAULT $1=, =CREATE INDEX ... WHERE a = $1=). The documentation says =DEFAULT= takes a "variable-free expression" (8.2) and positional parameters belong to prepared statements and function bodies (1.8); utility statements are not parameterizable in the extended protocol as far as the documentation goes, but it does not say so on these pages. | RESOLVED IN DOCUMENTATION (Phase 3): sql-cljs inlines all DDL literals (14.2) in both modes, so the question never reaches the server; the test =create-table-column-constraints= pins =DEFAULT 'x'= and =:values []= in parameter mode, and the view body and the partial-index predicate are inlined the same way. There is NO smoke build in this repository by design (the library is pure formatting with no live surface); the live check of DDL behavior is the owner's hand-run composition of pg-cljs with sql-cljs, not an automated step here. |
 | 15.4 | Inline mode on a server with =standard_conforming_strings = off=: backslashes in inlined strings would be interpreted as escapes (1.4, 3.6). Default has been =on= since 9.1. | Documented in the README's inline caution; no code path. A later phase may double backslashes behind an option if a user asks. |
 | 15.5 | Inline rendering of JavaScript =NaN= / =Infinity= / =-0= numbers (1.5: not numeric constants). | Phase 1: =NaN= and =±Infinity= in inline mode are a format error (=:op :inline=); =-0= renders =0=. Parameter mode passes them through untouched (pg-cljs's concern). Exact-string tests. |
-| 15.6 | Type resolution of an untyped parameter where context gives none (=SELECT $1=, =LIMIT $1= with a string value). The documentation does not state the rule on the pages read. | =LIMIT= / =OFFSET= parameterized per 14.4; the Phase 1-2 tests pin the text, and a live =EXPLAIN SELECT ... LIMIT $1= is listed for the Phase 3 smoke. If it fails live, =LIMIT= / =OFFSET= numbers become inline integers (a one-line change). |
+| 15.6 | Type resolution of an untyped parameter where context gives none (=SELECT $1=, =LIMIT $1= with a string value). The documentation does not state the rule on the pages read. | RESOLVED IN DOCUMENTATION (Phase 3): =LIMIT= / =OFFSET= stay parameterized per 14.4 and the Phase 1-2 tests pin the text. There is NO smoke build in this repository by design (pure formatting, no live surface); the live =EXPLAIN SELECT ... LIMIT $1= check of parameter typing is the owner's hand-run composition of pg-cljs with sql-cljs. If it fails live, =LIMIT= / =OFFSET= numbers become inline integers (a one-line change). |
 | 15.7 | =IN ()= with an empty list: not mentioned by the documentation (3.7); believed to be a syntax error. | Phase 1: =[:in :a []]= is a format error (=:op :in=, message suggesting =FALSE= or a non-empty list), never emitted. Decision; owner can overrule to render =FALSE= / =TRUE=. |
 | 15.8 | Type casts (=::type=, =CAST=) are out of the ruling's scope but almost every real query needs one (=$1::uuid=, =$1::jsonb=). | Not in =0.1.0=. Recorded for the owner as the first post-0.1.0 candidate; =(raw "$1::uuid")= cannot work because =$N= numbering is the formatter's. |
 | 15.9 | =FOR NO KEY UPDATE= / =FOR KEY SHARE= (2.11): in the grammar, not in the ruling's scope list. | Phase 1: accept =:no-key-update= / =:key-share= strengths alongside =:update= / =:share= (zero extra code paths, same clause shape) and document them; owner can strike them. |
-| 15.10 | =CONCURRENTLY= on =CREATE INDEX= / =DROP INDEX= (11): cannot run inside a transaction block, and =DROP INDEX CONCURRENTLY= forbids =CASCADE= and multiple names. The ruling says "document; decide scope". | Phase 3: accept =:concurrently true= on both and render it (=CREATE INDEX CONCURRENTLY= / =DROP INDEX CONCURRENTLY=); format error when combined with =:cascade= or several names on =DROP INDEX=; the manual states the transaction-block restriction. Owner can strike it. |
-| 15.11 | =CREATE OR REPLACE VIEW= (12.1): not in the ruling's scope list. | Phase 3: accept =:or-replace true= (one token); owner can strike it. |
+| 15.10 | =CONCURRENTLY= on =CREATE INDEX= / =DROP INDEX= (11): cannot run inside a transaction block, and =DROP INDEX CONCURRENTLY= forbids =CASCADE= and multiple names. The ruling says "document; decide scope". | IMPLEMENTED (Phase 3): =:concurrently true= on both, rendered =CREATE INDEX CONCURRENTLY= / =DROP INDEX CONCURRENTLY=; on =DROP INDEX= a format error (=:op :drop-index=) when combined with =:cascade= or with several names (=:restrict= is accepted, it is the default behavior); tests =create-index=, =drop-index=, =drop-errors=. The manual (Phase 4) states the transaction-block restriction. Owner can strike it. |
+| 15.11 | =CREATE OR REPLACE VIEW= (12.1): not in the ruling's scope list. | IMPLEMENTED (Phase 3): =:or-replace true= renders =CREATE OR REPLACE VIEW= (test =create-view=); owner can strike it. |
 | 15.12 | =%=, =^= and unary minus (3.11): not in the ruling's arithmetic list. | Phase 1: =:%= as a binary operator is accepted (one table entry); =:^= left out (left-associativity trap); unary =:-= with one argument renders =-(x)= parenthesized. Owner can strike. |
-| 15.13 | Per-column =ASC= / =DESC= / =NULLS= in =CREATE INDEX= (11.1): in the grammar, not in the scope list. | Phase 3: the =:on= column list accepts the same =[:a :desc]= items as =:order-by=; otherwise plain. |
+| 15.13 | Per-column =ASC= / =DESC= / =NULLS= in =CREATE INDEX= (11.1): in the grammar, not in the scope list. | IMPLEMENTED (Phase 3): =:columns= of =:create-index= accepts the =:order-by= item shape (=:a=, =[:b :desc]=, =[:c :asc :nulls-last]=, =[[:lower :title]]=), an operator expression parenthesized as the page requires; a bare value is a format error (test =create-index=, =create-index-errors=). |
 | 15.14 | Per-value =[:inline x]= special syntax (13.6). | Not in =0.1.0=; the whole-statement option covers the stated use (consoles/debugging). |
 | 15.15 | Whether =[:raw "..."]= (data spelling) is offered in addition to =(sql/raw "...")=. | Phase 1 offers both: =raw= returns a small record and =[:raw s]= is recognized in expression position; identical output. |
 | 15.16 | =:values= as a vector of maps and the =ON CONFLICT DO UPDATE ... WHERE= data shape (14.9). | Phase 2 decides with exact-string tests; the inventory facts (4.2, 4.3) constrain the output only. |
 | 15.17 | =UPDATE ... SET= from a map: CLJS array-maps keep insertion order up to 8 keys, hash-maps beyond do not (14.10). | Phase 2: =:set= accepts a map or a vector of pairs; the manual recommends the vector form (or =array-map=) when order matters (it never matters to PostgreSQL, only to the test strings). |
-| 15.18 | Column type spelling (14.11): multi-word types and array types. | Phase 3 pins: keyword → upper-case word, vector → =NAME(args)=, string → format error (strings are values), =raw= → verbatim. |
+| 15.18 | Column type spelling (14.11): multi-word types and array types. | IMPLEMENTED (Phase 3, test =create-table-types=): keyword → upper-case word with =-= as a space (=:double-precision= → =DOUBLE PRECISION=, =:timestamp-with-time-zone=), vector =[keyword & numbers]= → =NAME(args)=, string → format error (strings are values), =raw= → verbatim (array types, =interval hour to minute=). |
 | 15.19 | A bare keyword as =:where= (=:where :active= for =WHERE active=). | Phase 1: format error (=:where= must be a vector); a boolean column is written =[:= :active true]= or =(raw "active")=. Owner can relax. |
-| 15.20 | *No live verification happened in Phase 0*: =psql= is absent, so every "legal / illegal" claim above rests on the documentation alone. | The Phase 3 smoke (=dev/sql_cljs/smoke.cljs=, run by hand with a real server through pg-cljs) runs =EXPLAIN= of every SELECT the README shows and one temporary-table DDL round-trip; its findings correct this inventory IN PLACE. |
+| 15.20 | *No live verification happened in Phase 0*: =psql= is absent, so every "legal / illegal" claim above rests on the documentation alone. | RESOLVED IN DOCUMENTATION (Phase 3): there is NO smoke build in this repository by design: sql-cljs is pure formatting with no live surface, so an automated server check does not belong here. The live verification (=EXPLAIN= of the README's SELECTs, one temporary-table DDL round-trip) is the owner's hand-run check composing pg-cljs with sql-cljs; any finding corrects this inventory IN PLACE. Until then every "legal / illegal" claim above rests on the documentation alone. |

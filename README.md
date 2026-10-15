@@ -12,14 +12,17 @@ is asynchronous, and nothing touches the network.
 This README grows into the full shape shared by the sibling libraries
 (requirements, an offline quick start, going live, scenarios, pure helpers, the error
 taxonomy, features, settings, documentation and layout) as the surface is built. The
-query and data-modification sides are in place: `format` renders `SELECT` statements
-(with `DISTINCT`, `FROM`, joins, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` /
-`OFFSET`, `UNION`, `WITH` and locking clauses) and the expression operators, `INSERT`
-(multi-row `VALUES`, rows as maps, `DEFAULT`, `INSERT ... SELECT`, `ON CONFLICT`,
-`RETURNING`), `UPDATE` (`SET`, `FROM`), `DELETE` (`USING`) and `TRUNCATE`; `raw`
-splices verbatim SQL, `{:inline true}` renders every value as a literal for consoles
-and debugging, and `sql-cljs.helpers` offers one builder function per clause that
-returns the same plain maps.
+query, data-modification and data-definition sides are in place: `format` renders
+`SELECT` statements (with `DISTINCT`, `FROM`, joins, `WHERE`, `GROUP BY`, `HAVING`,
+`ORDER BY`, `LIMIT` / `OFFSET`, `UNION`, `WITH` and locking clauses) and the
+expression operators, `INSERT` (multi-row `VALUES`, rows as maps, `DEFAULT`, `INSERT
+... SELECT`, `ON CONFLICT`, `RETURNING`), `UPDATE` (`SET`, `FROM`), `DELETE`
+(`USING`) and `TRUNCATE`, and the DDL statements `CREATE TABLE` (column and table
+constraints), `DROP TABLE`, `ALTER TABLE` (add, drop and rename column), `CREATE
+INDEX` / `DROP INDEX` and `CREATE VIEW` / `DROP VIEW`; `raw` splices verbatim SQL,
+`{:inline true}` renders every value as a literal for consoles and debugging (DDL is
+always rendered that way, since it takes no parameters), and `sql-cljs.helpers`
+offers one builder function per clause that returns the same plain maps.
 
 ## Requirements
 
@@ -112,10 +115,29 @@ The covered PostgreSQL grammar, one capability per bullet (data definition to co
 - `TRUNCATE TABLE t, u` with `RESTART IDENTITY` / `CONTINUE IDENTITY` and `CASCADE` /
   `RESTRICT`.
 - `WITH` before `INSERT`, `UPDATE` and `DELETE`.
+- `CREATE TABLE [IF NOT EXISTS] t (...)` from column definitions `[name type &
+  constraints]` (types as upper-cased keywords, `[:varchar 40]` for arguments,
+  `:double-precision` for multi-word types, `raw` for the rest; `NOT NULL`, `NULL`,
+  `UNIQUE`, `PRIMARY KEY`, `DEFAULT`, `CHECK`, `REFERENCES` with `ON DELETE` / `ON
+  UPDATE` actions, `CONSTRAINT name`) and table constraints (`PRIMARY KEY`,
+  `UNIQUE`, `CHECK`, `FOREIGN KEY ... REFERENCES` with actions, `CONSTRAINT name`).
+- `DROP TABLE [IF EXISTS] t, u [CASCADE | RESTRICT]`.
+- `ALTER TABLE [IF EXISTS] t` with `ADD COLUMN [IF NOT EXISTS]`, `DROP COLUMN [IF
+  EXISTS] [CASCADE | RESTRICT]` (several, comma-separated) or `RENAME COLUMN ... TO`.
+- `CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] [name] ON t [USING method]
+  (columns with ASC / DESC / NULLS, expressions) [WHERE predicate]`, `DROP INDEX
+  [CONCURRENTLY] [IF EXISTS] i [CASCADE | RESTRICT]`.
+- `CREATE [OR REPLACE] VIEW v [(columns)] AS query`, `DROP VIEW [IF EXISTS] v
+  [CASCADE | RESTRICT]`.
+- DDL literals are always inline and a DDL statement's `:values` is always `[]`.
 
 Not covered: `INTERSECT` / `EXCEPT`, `DEFAULT VALUES`, `OVERRIDING ... VALUE`,
 `ONLY`, the multi-column `SET (a, b) = (...)` forms, `WHERE CURRENT OF`, type casts,
-and identifier quoting (names outside `[a-z_][a-z0-9_$]*` go through `raw`).
+identifier quoting (names outside `[a-z_][a-z0-9_$]*` go through `raw`), and in DDL
+`TEMPORARY` / `UNLOGGED`, `GENERATED` and identity columns, `DEFERRABLE`, `EXCLUDE`,
+the other `ALTER TABLE` actions, `INCLUDE` / `COLLATE` / `opclass` on indexes and
+the view options (a `raw` fragment stands in for a constraint or a type the shapes
+do not spell).
 
 ## Limits and settings
 
@@ -160,8 +182,14 @@ test/sql_cljs/      mirrors src; run-tests.sh + test/publicity_gate.sh
   `index-where`, `do-nothing`, `do-update-set` (one argument, the assignments),
   `do-update-where`, `returning`, `update`, `set` (one argument, a map or a vector of
   pairs), `delete-from`, `using`, `truncate`, `restart-identity`,
-  `continue-identity`, `cascade`, `restrict`. Refer to the namespace with an alias:
-  `for`, `set`, `update`, `group-by` and `distinct` shadow `cljs.core`.
+  `continue-identity`, `cascade`, `restrict`. Data definition: `create-table`,
+  `if-not-exists`, `columns` (column definitions here), `constraints`, `drop-table`,
+  `if-exists`, `alter-table`, `add-column` (the definition, then options),
+  `drop-column` (the name, then options), `rename-column`, `create-index` (the name,
+  or none), `unique`, `concurrently`, `on`, `using` (the index method), `where` (the
+  partial-index predicate), `drop-index`, `create-view`, `or-replace`, `as` (one
+  argument, the body), `drop-view`. Refer to the namespace with an alias: `for`,
+  `set`, `update`, `group-by` and `distinct` shadow `cljs.core`.
 
 The full index follows the surface.
 
