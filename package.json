@@ -1,0 +1,14 @@
+{
+  "name": "sql-cljs",
+  "version": "0.1.0",
+  "description": "ClojureScript (Node.js) SQL query builder for PostgreSQL: plain ClojureScript data in (maps for statements, vectors for expressions), a parameterized {:text :values} query out, ready for pg-cljs; pure formatting, no JS interop, no runtime npm dependency, no network",
+  "private": true,
+  "license": "Unlicense",
+  "scripts": {
+    "test": "./run-tests.sh"
+  },
+  "devDependencies": {
+    "shadow-cljs": "^2.28.23",
+    "source-map-support": "^0.5.21"
+  }
+}

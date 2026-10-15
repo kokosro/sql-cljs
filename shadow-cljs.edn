@@ -1,0 +1,34 @@
+;; shadow-cljs configuration for sql-cljs.
+;; Standalone (no :deps) so `npx shadow-cljs ...` only needs Java + node_modules.
+;; The library has no dependency beyond ClojureScript itself (which shadow-cljs
+;; brings): no promesa, no core.async, no npm package. `source-map-support` is
+;; picked up automatically by the generated node scripts when present (readable
+;; stack traces).
+{:source-paths ["src" "test" "dev"]
+ :dependencies []
+ :builds
+ {;; Unit tests. `npx shadow-cljs compile node-test` compiles AND runs them (:autorun).
+  ;; NOTE: shadow's autorun does not propagate the test exit status, so ./run-tests.sh
+  ;; compiles with `--config-merge '{:autorun false}'` and runs `node target/node-test.js`.
+  ;; The suite is pure formatting: exact SQL strings in, exact SQL strings out;
+  ;; no database, no network, no secrets.
+  :node-test {:target :node-test
+              :output-to "target/node-test.js"
+              :ns-regexp "-test$"
+              :autorun true}
+
+  ;; Interactive development build for a Node REPL:
+  ;;   npx shadow-cljs watch dev          ; terminal 1: compiles + hot reloads
+  ;;   node target/dev.js                 ; terminal 2: starts the Node runtime the REPL attaches to
+  ;;   npx shadow-cljs cljs-repl dev      ; terminal 3: REPL inside that Node process
+  :dev {:target :node-script
+        :main sql-cljs.dev/main
+        :output-to "target/dev.js"
+        :devtools {:enabled true}}
+
+  ;; The examples of the README (dev/sql_cljs/examples.cljs): every README
+  ;; example formatted and printed; no PostgreSQL server, no network:
+  ;;   npx shadow-cljs compile examples && node target/examples.js
+  :examples {:target :node-script
+             :main sql-cljs.examples/main
+             :output-to "target/examples.js"}}}
