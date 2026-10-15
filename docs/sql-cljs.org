@@ -1,0 +1,847 @@
+#+TITLE: sql-cljs Manual
+#+SUBTITLE: A pure ClojureScript (Node.js) SQL query builder for PostgreSQL; maps and vectors in, {:text :values} out
+#+OPTIONS: toc:2 num:t ^:nil
+#+LANGUAGE: en
+
+* Introduction
+
+=sql-cljs= renders plain ClojureScript data to the parameterized SQL a PostgreSQL
+client sends. A statement is a map of clauses (={:select [:a :b] :from [:t] :where
+[:= :t.a "x"]}=), an expression is a vector whose first element is the operator or
+function (=[:= :a 1]=, =[:count :*]=), keywords and symbols name tables and columns,
+strings are always values, and =format= gives ={:text "SELECT a, b FROM t WHERE t.a =
+$1" :values ["x"]}=, the exact map =pg-cljs.core/query!= takes. The library is pure
+formatting: no JavaScript interop in =src/= or =test/=, no runtime npm dependency,
+nothing asynchronous, no network, no file access. It decides nothing about
+execution: it holds no connection and sends nothing.
+
+Three public namespaces:
+
+| namespace           | holds                                                                                  |
+|---------------------+----------------------------------------------------------------------------------------|
+| =sql-cljs.core=     | =format=, =raw=, =api-version=; the format engine and every statement head             |
+| =sql-cljs.helpers=  | one builder function per clause, returning the same plain maps, threading on an optional statement |
+| =sql-cljs.util=     | the engine internals: the error constructor, the entity validator, the raw type, the inline literal renderer |
+
+The external surface the library renders to is a grammar, not a package: the SQL
+of PostgreSQL as its documentation states it. The inventory of that grammar for the
+=0.1.0= scope, with the page each fact was taken from, is =docs/sql-api-inventory.org=.
+This manual is about using the library. HoneySQL 2.x is the design reference for the
+data shapes; none of its code is used.
+
+* Quick start
+
+Node.js 22+ and Java 11+ (for shadow-cljs). The library is consumed as a source
+dependency; there is no npm side.
+
+#+begin_src clojure
+;; deps.edn of the consuming app, next to a checkout
+{:deps {io.github.kokosro/sql-cljs {:local/root "../sql-cljs"}}}
+#+end_src
+
+The examples of the README run offline (everything in this library does):
+
+#+begin_src sh
+npm install
+npx shadow-cljs compile examples && node target/examples.js
+#+end_src
+
+The shape of every program: build the map, format it, hand the result to the client.
+
+#+begin_src clojure
+(ns app.db
+  (:require [promesa.core :as p]
+            [pg-cljs.core :as pg]
+            [sql-cljs.core :as sql]
+            [sql-cljs.helpers :as h]))
+
+(def cheap-products
+  (-> (h/select :id :name :price_cents)
+      (h/from :products)
+      (h/where [:< :price_cents 500])
+      (h/order-by :id)))
+
+(sql/format cheap-products)
+;; => {:text "SELECT id, name, price_cents FROM products WHERE price_cents < $1 ORDER BY id"
+;;     :values [500]}
+
+(p/let [client (pg/connect! {:host "db.example.test" :user "shop" :database "shop"})
+        result (pg/query! client (sql/format cheap-products))
+        _      (pg/end! client)]
+  (:rows result))
+#+end_src
+
+=(sql/format q {:inline true})= spells every value as a literal instead, for a console
+or a log, and returns =:values []=.
+
+* Concepts
+
+** Statements are maps
+
+A statement is a map with exactly one head clause (=:select=, =:union=, =:union-all=,
+=:insert-into=, =:update=, =:delete-from=, =:truncate=, =:create-table=, =:drop-table=,
+=:alter-table=, =:create-index=, =:drop-index=, =:create-view=, =:drop-view=) and the
+clauses that head accepts. The key order of the map never matters: the text follows
+the PostgreSQL synopsis order of the statement kind (=WITH=, =SELECT=, =FROM=, joins,
+=WHERE=, =GROUP BY=, =HAVING=, =ORDER BY=, =LIMIT=, =OFFSET=, =FOR=). A clause that does
+not belong to the head (=:set= next to =:select=, =:where= next to =:truncate=) is a
+format-error with the head as =:op=; a required clause that is missing (=:values= for
+=:insert-into=, =:set= for =:update=, =:columns= for =:create-table=, =:on= and =:columns=
+for =:create-index=, =:actions= for =:alter-table=, =:as= for =:create-view=) is a
+format-error too. A statement map is accepted wherever a subquery is legal: a =:from=
+item, a select item (a scalar subquery), the right-hand side of =:in=, the operand of
+=:exists=, a CTE body, a set-operation operand, the =:values= of an =INSERT=, the =:as= of
+a view. Nested, it is parenthesized; as a set-operation operand it is parenthesized
+too (=(SELECT a FROM t) UNION (SELECT a FROM u)=); as a view body it is not.
+
+The output is one line: upper-case key words, single spaces, no trailing semicolon,
+no newline.
+
+** Expressions are vectors
+
+A vector in expression position starts with its operator or function:
+
+| spelling                                          | SQL                                         |
+|---------------------------------------------------+---------------------------------------------|
+| =[:= a b]= =[:not= a b]= =[:<> a b]= =[:< a b]= =[:> a b]= =[:<= a b]= =[:>= a b]= | =a = b=, =a <> b= (both =:not== and =:<>=), ... |
+| =[:and p q ...]= =[:or p q ...]= =[:not p]=        | =(p) AND (q)=, =(p) OR (q)=, =NOT (p)=; one operand stands alone |
+| =[:+ a b ...]= =[:- a b ...]= =[:* a b ...]= =[:/ a b]= =[:% a b]= | arithmetic, n-ary where SQL is; =[:- a]= alone is unary minus =-(a)= |
+| =[:in a [1 2 3]]= =[:in a {subquery}]= =[:not-in ...]= | =a IN ($1, $2, $3)=, =a IN (SELECT ...)=; a lazy sequence is a list too; the empty list is a format-error |
+| =[:like a b]= =[:ilike a b]= =[:not-like ...]= =[:not-ilike ...]= | =a LIKE b=, =a ILIKE b=, =a NOT LIKE b=, ... |
+| =[:between a lo hi]= =[:not-between a lo hi]=      | =a BETWEEN lo AND hi=                        |
+| =[:is-null a]= =[:is-not-null a]=                  | =a IS NULL=, =a IS NOT NULL=                 |
+| =[:exists {subquery}]= =[:not-exists {subquery}]=  | =EXISTS (SELECT ...)=                        |
+| =[:coalesce a 0]= =[:now]= =[:lower :email]=, any other lettered keyword | a function call, the name upper-cased: =COALESCE(a, $1)=, =NOW()=, =LOWER(email)= |
+| =[:raw "..."]= or =(sql/raw "...")=                | the text verbatim                            |
+
+An operator keyword with no letter in it (=:<=>=, =:||=, =:^=) must be one of the
+operators above; otherwise it is a format-error with the operators under =:allowed=.
+A lettered keyword is a function call and goes through the identifier rule like any
+name (=:string_agg=, not =:string-agg=). The arity of each operator is checked (=[:=
+:a]= and =[:= :a 1 2]= are errors). Inside =[:and ...]= or =[:or ...]= a bare column
+is a boolean operand; =:where :active= alone is a format-error whose message suggests
+=[:= :active true]= (a clause takes an expression vector).
+
+At the top level of =:select=, =:returning=, =:group-by= and =:order-by= a two-element
+vector is =[expression alias]= (select and returning) or =[expression modifier]= (order
+by), so a function call there nests one level deeper: =[[:count :*] :n]= is =COUNT(*)
+AS n=, =[[:count :*]]= is =COUNT(*)= without an alias, and =[0 :depth]= is =$1 AS depth=.
+Inside a =:where=, a =:having= or an operator the vector is the expression itself.
+An alias is always rendered with =AS=.
+
+** Names and values
+
+Keywords and symbols are entities: table, column, alias, function and constraint
+names, rendered bare. A qualified name is written either way, =:t/a= or =:t.a=, and
+renders =t.a=; =:*= and =:t/*= are the star element, accepted in a select list and as
+a function argument (=[:count :*]=). Everything that is not a keyword, a symbol, a
+vector, a map or a raw fragment is a value: strings, numbers, booleans, =nil=,
+BigInts, dates, objects. A string is never a name: =:from ["users"]= is a
+format-error with =:op :from= and =:arg "users"=, and so is =[:a "alias"]= in a select
+list. =nil= is a value like any other (=[:= :a nil]= is =a = $1= with =nil= among the
+values; write =[:is-null :a]= for the SQL test).
+
+Two spellings are key words rather than names: =:default= in a value slot of =INSERT
+... VALUES=, of =:set= or of =:do-update-set= is =DEFAULT=; =:all= as a =:limit= is
+=LIMIT ALL=. =:excluded/name= in =ON CONFLICT DO UPDATE SET= is a qualified name that
+happens to name the proposed row, as the SQL does.
+
+** Parameters: $N in order of appearance, values never touched
+
+Every value becomes the next placeholder, =$1=, =$2=, ..., numbered in the order the
+values appear in the text, across nested statements and CTEs (the CTE's values come
+first, since the =WITH= clause renders first). The value is appended to =:values= as
+it was written: no coercion, no stringification, no copy; a string in =:values= is
+the same object the caller passed. A value used twice is sent twice (=$1= and =$2=);
+the library never deduplicates. The client encodes the values for the wire; with
+pg-cljs that is =pg='s encoding: strings, numbers, booleans and BigInts as their text
+for the server to cast, =nil= as =NULL=, vectors as array literals, Dates as
+timestamps. A ClojureScript list or set in a value position is a format-error (a
+list or set cannot travel as a parameter: =vec= it); a vector in a value position is
+an expression, so an array value goes through =raw= or a cast on the server side.
+
+** Parenthesization
+
+Every nested operator operand is parenthesized: =[:and [:= :a 1] [:> :b 2]]= is =(a =
+$1) AND (b > $2)=, =[:* [:+ :a :b] :c]= is =(a + b) * c=, =[:not [:is-null :c]]= is =NOT
+(c IS NULL)=. Precedence is never relied on. A function call is not parenthesized as
+an operand and its arguments are rendered as written (=ROUND(AVG(a), $1)=); unary
+minus already carries its parentheses (=-(a)=). A subquery is parenthesized wherever
+it nests; a set-operation operand is parenthesized; a =CHECK= constraint body is
+always parenthesized; a =DEFAULT= or an index column that is an operator expression is
+parenthesized, a function call there is not.
+
+** The identifier rule and the raw hatch
+
+Every dot-separated part of an entity must match =[a-z_][a-z0-9_$]*=
+(=sql-cljs.util/identifier-pattern=): a lower-case letter or underscore, then
+lower-case letters, digits, underscores and dollar signs. That is the unquoted
+identifier charset of PostgreSQL in lower case =[SRC
+https://www.postgresql.org/docs/current/sql-syntax-lexical.html]=. PostgreSQL folds
+an unquoted name to lower case, so a bare =UserId= would name =userid=, a different
+object than it reads; rather than quote silently (and change the meaning of every
+name) the library never quotes and refuses the name: =:UserId= is a format-error with
+=:op= the clause, =:arg "UserId"= (the part) and =:entity :UserId= (the whole), and the
+message names the hatch. The hatch is =(sql/raw "\"UserId\"")=: the quoted identifier
+written by you, spliced verbatim, accepted wherever a name is (a select item, a =:from=
+item, a =CREATE TABLE= name, a column name in a definition, a =:drop-table= list). The
+same hatch stands for a reserved word used as a name (=(sql/raw "\"user\"")=): the
+library does not detect reserved words, and a bare =user= or =order= fails on the
+server with a syntax error =[SRC
+https://www.postgresql.org/docs/current/sql-keywords-appendix.html]=.
+
+=raw= is copied as is: not validated, not parameterized, not quoted. It is the
+escape hatch for everything the shapes do not spell (a cast, an array type, a window
+function, an =INTERVAL= literal, a constraint form), and it is a SQL injection vector
+when built from untrusted input. Build raw fragments from your own constants only.
+=[:raw "..."]= in expression position renders identically; at the top level of
+=:select= or =:from=, where a two-element vector is an alias pair, it nests like a
+function call: =[[:raw "NOW()"]]= or =[[:raw "NOW()"] :now]=.
+
+** Inline mode
+
+=(sql/format q {:inline true})= renders every value as a literal in =:text= and returns
+=:values []=: =nil= as =NULL=, a string as ='...'= with every ='= doubled and nothing
+else touched (never =E'...'=, never dollar quoting), =true= / =false= as =TRUE= /
+=FALSE=, a number or a BigInt as its decimal text (=-0= renders =0=). =NaN=, =Infinity=
+and =-Infinity= are not SQL numeric constants =[SRC
+https://www.postgresql.org/docs/current/sql-syntax-lexical.html]= and are a
+format-error with =:op :inline=; so is any value with no literal spelling the library
+can vouch for (a Date, an object, a function). On a server with
+=standard_conforming_strings = off= (the default has been =on= since PostgreSQL 9.1) a
+backslash in an inlined string would be read as an escape; the library does not
+double backslashes. Inline text is for SQL consoles and debugging: it is built from
+caller data with no server-side protection, so inlining untrusted input is SQL
+injection. Parameter mode never inspects a value (=NaN= passes through; the client
+decides).
+
+Data definition statements are rendered inline in both modes: DDL takes no
+parameters, so a =DEFAULT=, a =CHECK= constant, a partial-index predicate or a view
+body is spelled out and the statement's =:values= is always =[]=. A value with no
+literal spelling in a DDL statement is a format-error whatever the option.
+
+** Helpers compose with merge
+
+=sql-cljs.helpers= has one builder per clause, each returning ={clause value}=:
+=(h/select :a :b)= is ={:select [:a :b]}=, =(h/where [:= :a 1])= is ={:where [:= :a
+1]}=, =(h/insert-into :t)= is ={:insert-into :t}=. Each also takes the statement being
+built as an optional first argument, so they thread: =(-> (h/select :a) (h/from :t)
+(h/where [:= :a 1]))= is ={:select [:a] :from [:t] :where [:= :a 1]}=. A repeated
+clause merges the HoneySQL way: a vector clause concatenates (=(-> (h/select :a)
+(h/select :b))= is ={:select [:a :b]}=), =where= and =having= combine their predicates
+with =[:and ...]= (an existing =[:and ...]= takes the new ones), a map clause (=:set=,
+=:on-conflict= and its family) merges its keys, a scalar clause (a target table,
+=:limit=, =:offset=, a flag) replaces. Since a leading map is the statement, a subquery
+given as a clause item is written nested: =(h/from [[{:select [:a] :from [:u]}
+:s]])=. =union= and =union-all= are the exception: every argument is an operand and
+they never thread.
+
+The helpers validate nothing and the data is the API: a statement built with helpers
+equals the literal map and formats identically, and =merge=, =assoc=, =dissoc= and
+=update= on it are the composition. There is no =build= function. Several helpers
+take ONE argument where the clause value is one thing: =values= (the vector of rows,
+or the source statement), =set= and =do-update-set= (the assignments, a map or a
+vector of pairs), =as= (the view body), =add-column= (the column definition, then
+options). =for=, =set=, =update=, =group-by= and =distinct= shadow =cljs.core=: refer
+to the namespace with an alias.
+
+* Queries (SELECT and set operations)
+
+#+begin_src clojure
+(sql/format
+ {:with      [[:recent {:select [:id] :from [:orders] :where [:> :placed_at (sql/raw "NOW() - INTERVAL '7 days'")]}]]
+  :select    [:c.id [[:count :*] :n] {:select [[[:max :total_cents]]] :from [:orders] :where [:= :orders.customer_id :c.id]}]
+  :distinct  true
+  :from      [[:customers :c]]
+  :join      [[:orders :o] [:= :o.customer_id :c.id]]
+  :left-join [:regions [:using :region_id]]
+  :where     [:and [:in :o.id {:select [:id] :from [:recent]}] [:not [:is-null :c.email]]]
+  :group-by  [:c.id]
+  :having    [:>= [:count :*] 2]
+  :order-by  [[:n :desc :nulls-last] :c.id]
+  :limit     10
+  :offset    20
+  :for       [:update :c :skip-locked]})
+#+end_src
+
+- =:select= is a vector of items, or a single keyword (=:select :a=); =:distinct true=
+  adds =DISTINCT=, =:distinct-on [:a :b]= adds =DISTINCT ON (a, b)= (the two are
+  exclusive). An empty select list is a format-error.
+- =:from= items are =:t=, =[:t :alias]=, ={subquery}= or =[{subquery} :alias]=; a =raw=
+  fragment stands for a table.
+- =:join= (or =:inner-join=), =:left-join=, =:right-join=, =:full-join= take a flat vector
+  of table-then-condition pairs, =[:u [:= :t.id :u.t_id] [:v :x] [:using :id]]=; the
+  condition is an expression (=ON ...=) or =[:using :col ...]=. =:cross-join= takes
+  tables only. The kinds are emitted in that fixed order after =FROM= (inner, left,
+  right, full, cross), each kind in the caller's order; use one kind per clause when
+  the interleaving matters.
+- =:where= and =:having= are one expression each; several predicates combine as =[:and
+  ...]=. =:group-by= is a vector of expressions.
+- =:order-by= items are =:a= or =[expr :asc|:desc :nulls-first|:nulls-last]= with any
+  of the modifiers, in that order: =[:spent :desc :nulls-last]= is =spent DESC NULLS
+  LAST=.
+- =:limit= takes a number (sent as a parameter), =:all= (=LIMIT ALL=) or a =raw=
+  fragment; =:offset= a number or a =raw= fragment. A keyword or a collection there is
+  a format-error.
+- =:for= is =:update=, or a vector =[strength table ... option]=: strengths =:update=,
+  =:no-key-update=, =:share=, =:key-share=; tables after =OF=; one option =:nowait= or
+  =:skip-locked=, written anywhere after the strength. =FOR= renders last.
+- =:union= and =:union-all= take a vector of statement maps, each operand
+  parenthesized; =:order-by=, =:limit= and =:offset= next to them apply to the whole,
+  every other clause belongs inside an operand (a format-error otherwise names the
+  rest). A set operation nests as an operand and as a subquery.
+- =:with= and =:with-recursive= take a vector of =[:name {statement}]= or =[[:name :col
+  ...] {statement}]=; the body may be a =raw= fragment (=(sql/raw "VALUES (1, 2)")=).
+  The two cannot both be given. A =WITH= stands before =SELECT=, =INSERT=, =UPDATE= and
+  =DELETE=, and before a set operation.
+
+* Data modification (INSERT, UPDATE, DELETE, TRUNCATE)
+
+#+begin_src clojure
+(sql/format {:insert-into [:products :p]
+             :columns     [:id :name]
+             :values      [[1 "pencil"] [2 :default]]
+             :on-conflict {:on-columns [:id] :index-where [:is-null :deleted_at]
+                           :do-update-set {:name :excluded/name}
+                           :where [:<> :p.name :excluded/name]}
+             :returning   [:id]})
+;; => {:text "INSERT INTO products AS p (id, name) VALUES ($1, $2), ($3, DEFAULT) ON CONFLICT (id) WHERE deleted_at IS NULL DO UPDATE SET name = excluded.name WHERE p.name <> excluded.name RETURNING id"
+;;     :values [1 "pencil" 2]}
+
+(sql/format {:update :products :set [[:price_cents [:+ :price_cents 10]] [:updated_at [:now]]]
+             :from [:price_changes] :where [:= :products.id :price_changes.product_id] :returning [:*]})
+;; => {:text "UPDATE products SET price_cents = price_cents + $1, updated_at = NOW() FROM price_changes WHERE products.id = price_changes.product_id RETURNING *"
+;;     :values [10]}
+
+(sql/format {:delete-from [:orders :o] :using [:customers] :where [:and [:= :o.customer_id :customers.id] [:= :customers.closed true]]})
+;; => {:text "DELETE FROM orders AS o USING customers WHERE (o.customer_id = customers.id) AND (customers.closed = $1)"
+;;     :values [true]}
+
+(sql/format {:truncate [:orders :order_lines] :restart-identity true :cascade true})
+;; => {:text "TRUNCATE TABLE orders, order_lines RESTART IDENTITY CASCADE" :values []}
+#+end_src
+
+- =:insert-into= is =:t= or =[:t :alias]= (always =INSERT INTO t AS alias=). =:values= is
+  a vector of rows: vectors, following =:columns=, or maps sharing one key set, whose
+  keys become the column list (the first map's order, or the =:columns= order when
+  given; later rows are read by key). Rows of different shapes are a format-error.
+  =:default= in a value slot is =DEFAULT=. A statement map as =:values= is =INSERT ...
+  SELECT=.
+- =:on-conflict= is a map: the target is =:on-columns= (a column or an index
+  expression such as =[:lower :email]=, rendered =(LOWER(email))=; a single keyword is
+  accepted) with an optional =:index-where= predicate, or =:on-constraint :name=, or
+  neither (for =DO NOTHING= only); the action is =:do-nothing true= or =:do-update-set=
+  (a map or a vector of pairs, as =:set=) with an optional =:where= condition.
+  =:excluded/col= names the proposed row.
+- =:returning= takes the items of a select list: =:id=, =[:*]=, =[[:lower :name] :n]=.
+- =:update= is =:t= or =[:t :alias]=; =:set= is a map ={:a 1 :b :c}= or a vector of
+  =[column expression]= pairs (the vector keeps the order past eight assignments);
+  column names are never table-qualified; =:default= assigns the default. Then
+  =:from=, =:where=, =:returning=.
+- =:delete-from= is =:t= or =[:t :alias]=, then =:using= (a =FROM= list), =:where=,
+  =:returning=.
+- =:truncate= is =:t= or a vector of tables, always =TRUNCATE TABLE=, with the flags
+  =:restart-identity= / =:continue-identity= and =:cascade= / =:restrict= (a pair both
+  true is a format-error).
+
+* Data definition (CREATE TABLE, indexes, views)
+
+#+begin_src clojure
+(sql/format {:create-table  :films
+             :if-not-exists true
+             :columns       [[:code [:char 5] [:constraint :firstkey :primary-key]]
+                             [:title [:varchar 40] :not-null]
+                             [:did :integer :not-null [:references :distributors :did] [:on-delete :cascade]]
+                             [:date_prod :date]
+                             [:len (sql/raw "interval hour to minute")]
+                             [:price :numeric [:default 0] [:check [:>= :price 0]]]]
+             :constraints   [[:constraint :production [:unique :date_prod]]
+                             [:foreign-key [:did] [:references :distributors :did] [:on-update :restrict]]]})
+
+(sql/format {:create-index :films_title_idx :unique true :concurrently true :if-not-exists true
+             :on :films :using :btree :columns [[[:lower :title]] [:date_prod :desc :nulls-last]]
+             :where [:is-not-null :date_prod]})
+;; => {:text "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS films_title_idx ON films USING btree (LOWER(title), date_prod DESC NULLS LAST) WHERE date_prod IS NOT NULL" :values []}
+
+(sql/format {:alter-table :films :actions [[:add-column [:note :text] :if-not-exists] [:drop-column :len :if-exists :cascade]]})
+(sql/format {:alter-table :films :actions [[:rename-column :len :length]]})
+(sql/format {:create-view :recent_films :or-replace true :columns [:code :title]
+             :as {:select [:code :title] :from [:films] :where [:> :date_prod "2000-Jan-01"]}})
+(sql/format {:drop-table [:films :distributors] :if-exists true :cascade true})
+(sql/format {:drop-index [:films_title_idx] :concurrently true :if-exists true})
+(sql/format {:drop-view [:recent_films] :if-exists true})
+#+end_src
+
+- A column definition is =[name type & constraints]=. The type is a keyword rendered
+  upper-case (=:text=, =:bigint=, =:timestamptz=; =:double-precision= and
+  =:timestamp-with-time-zone= spell multi-word types, the hyphen becoming a space), a
+  vector =[keyword & numbers]= for =NAME(n, ...)= (=[:varchar 40]=, =[:numeric 10 2]=),
+  or a =raw= fragment for anything else (array types, =(sql/raw "text[]")=). A string
+  as a type is a format-error. Column constraints, in the order written: =:not-null=,
+  =:null=, =:unique=, =:primary-key=, =[:default expr]= (an operator expression is
+  parenthesized, a function call is not), =[:check expr]= (always parenthesized),
+  =[:references :t & cols]= then =[:on-delete action]= / =[:on-update action]= with
+  actions =:no-action=, =:restrict=, =:cascade=, =:set-null=, =:set-default=,
+  =[:constraint :name constraint]=, or a =raw= fragment.
+- Table constraints (=:constraints=, after the columns): =[:primary-key :a :b]=,
+  =[:unique :a]=, =[:check expr]=, =[:foreign-key [:a :b] [:references :t :c :d]
+  [:on-delete :cascade]]=, =[:constraint :name constraint]=, or a =raw= fragment.
+- =:drop-table=, =:drop-index=, =:drop-view= take a name or a vector of names, with
+  =:if-exists= and =:cascade= / =:restrict=. =:drop-index= also takes =:concurrently=,
+  which then requires exactly one name and no =:cascade= (format-errors otherwise).
+- =:alter-table= takes =:if-exists= and =:actions=, a vector of =[:add-column [name type
+  & constraints] :if-not-exists]=, =[:drop-column :c :if-exists :cascade|:restrict]=
+  and =[:rename-column :old :new]=; the options after the arguments are optional.
+  Several =ADD= / =DROP= actions are comma-separated; =RENAME COLUMN= is a form of its
+  own and cannot be combined (a format-error with =:op :actions=).
+- =:create-index= takes the name (or =nil= for an unnamed index), =:unique=,
+  =:concurrently=, =:if-not-exists=, =:on :t=, =:using :gin= (the method, a keyword),
+  =:columns= (a vector of order-by items: =:a=, =[:b :desc :nulls-last]=, =[[:lower
+  :email]]=; an operator expression is parenthesized) and =:where=, the partial-index
+  predicate.
+- =:create-view= takes the name, =:or-replace=, =:columns= (the view's column names)
+  and =:as=, the body: a statement map, rendered without parentheses, or a =raw=
+  fragment.
+- DDL literals are always inline and a DDL statement's =:values= is =[]=.
+
+* Errors
+
+One taxonomy, =:sql-cljs/format-error=, raised as an =ex-info= before any text is
+produced (the text of a statement that throws is never partially built). Its data:
+
+| key        | meaning                                                                                              |
+|------------+------------------------------------------------------------------------------------------------------|
+| =:type=    | =:sql-cljs/format-error=                                                                             |
+| =:message= | what was expected and what was found; the =ex-message= is the same text prefixed ="sql-cljs: "=      |
+| =:op=      | the innermost context the offending piece belongs to: a clause (=:select=, =:from=, =:where=, =:actions=), an operator (=:in=, =:==), a statement head (=:update= for a clause that does not apply next to it, or a missing required clause), =:statement= (a non-map, an unknown clause, two heads), =:format= (a bad option), =:inline= (a value with no literal), =:raw= (a non-string) |
+| =:arg=     | the offending piece itself: the value, the part of the name, the form, the clause key, the whole statement for a missing clause |
+| =:entity=  | for a rejected name, the whole entity whose part failed (=:UserId=, =:foo/Bar=)                      |
+| =:allowed= | where a closed set exists: the clauses of the statement kind, the known operators, the options of =format= |
+
+The library throws nothing else: =sql-cljs.util/format-error= is the one constructor.
+A statement that formats is one the library vouches for syntactically within the
+shapes it spells; what the server then rejects (a reserved word as a bare name, a
+missing table, a type mismatch, a =DEFAULT= with a subquery) is the server's error,
+reported by the client as a =:pg-cljs/query-error= with its SQLSTATE.
+
+* Gotchas
+
+Each entry is a diagnosis: what you see, why, what to do.
+
+** =CREATE INDEX CONCURRENTLY cannot run inside a transaction block=
+The server refuses =CREATE INDEX CONCURRENTLY= and =DROP INDEX CONCURRENTLY= inside
+=BEGIN ... COMMIT= =[SRC https://www.postgresql.org/docs/current/sql-createindex.html]=.
+The library renders =:concurrently true= as written and checks only what the grammar
+states (=DROP INDEX CONCURRENTLY= takes one name and no =CASCADE=). Run the statement
+on its own, outside the transaction that runs the rest of a migration; the
+=migration= example of the README is a vector precisely so that each statement is
+sent separately. A =CREATE INDEX CONCURRENTLY= that fails leaves an invalid index
+behind; drop it before retrying.
+
+** Which =ON CONFLICT= arbiter
+Both forms are exposed and the caller picks: =:on-columns= (with an optional
+=:index-where= for a partial unique index) infers the unique index from the columns;
+=:on-constraint= names the constraint. The PostgreSQL documentation prefers inference
+=[SRC https://www.postgresql.org/docs/current/sql-insert.html]=: a constraint name is
+an implementation detail that a migration may rename, while the column list states
+the intent. Only =NOT DEFERRABLE= constraints and unique indexes serve as arbiters;
+the server enforces that, the library does not look. The library chooses nothing
+here by design: it renders either form and never rewrites one into the other.
+
+** A subquery as a =DEFAULT= formats, then the server rejects it
+=[:default {:select ...}]= in a column definition renders =DEFAULT (SELECT ...)=, as
+written. PostgreSQL does not allow subqueries in a =DEFAULT= expression =[SRC
+https://www.postgresql.org/docs/current/sql-createtable.html]=, so the statement
+fails on the server. The engine renders what the caller wrote and adds no check of
+its own beyond the grammar shapes; use a function call or a constant.
+
+** A reserved word as a name fails on the server
+=:user=, =:order=, =:group=, =:check=, =:end=, =:default= as a table or column name
+render bare (=user=) and the server answers with a syntax error at that position
+=[SRC https://www.postgresql.org/docs/current/sql-keywords-appendix.html]=. The
+library does not carry the reserved-word list. Write =(sql/raw "\"user\"")= for the
+name, or rename the column. Note that =:default= in a VALUE slot is the =DEFAULT= key
+word by design, so it can never name a column there.
+
+** A mixed-case or hyphenated name is refused
+=:UserId=, =:a-b=, =:1a=, =(keyword "a b")= are format-errors with =:arg= the part and
+=:entity= the whole. PostgreSQL would fold =UserId= to =userid= and reject the rest, so
+the library refuses rather than quote silently. The hatch is =(sql/raw "\"UserId\"")=.
+A hyphenated function name is a name too: =:string_agg=, not =:string-agg=.
+
+** A =:set= map with more than eight keys renders in another order
+ClojureScript keeps the written order of a map literal up to eight entries (an array
+map) and not beyond (a hash map). A =:set=, =:do-update-set= or row map with nine or
+more keys still renders every column exactly once, in the hash map's order, which
+PostgreSQL does not mind; the text is not the one you would write by hand, and a
+test pinning it would be brittle. Use the vector of pairs (=[[:a 1] [:b 2] ...]=) for
+=:set= and =:do-update-set=, and =:columns= with vector rows for =INSERT=, when the order
+matters to you.
+
+** =NaN= inline is an error; =NaN= as a parameter is not
+=##NaN=, =##Inf= and =##-Inf= are not SQL numeric constants: in inline mode they are a
+format-error with =:op :inline=. In parameter mode they pass through untouched, as
+every value does, and the client decides (=pg= sends a number as its text, so =NaN=
+reaches the server as the text =NaN=, which =numeric= and the float types accept and
+the integer types reject). Pass them as parameters or as strings.
+
+** =[:= :a nil]= is =a = $1=, not =a IS NULL=
+=nil= is a value and travels as a parameter; =a = NULL= is never true in SQL. Write
+=[:is-null :a]= or =[:is-not-null :a]= for the test. The library rewrites nothing.
+
+** The join kinds come out in a fixed order
+=:join=, =:left-join=, =:right-join=, =:full-join= and =:cross-join= are separate clauses,
+emitted in that order after =FROM=, each in the caller's order. When an inner join
+must follow a left join, put the inner join's condition in =:where=, or make the
+second join a left join too.
+
+** A list or set among the values is refused
+A ClojureScript list or set in a value position is a format-error ("cannot travel as
+a parameter"): =pg= would stringify it into text that is neither JSON nor a
+PostgreSQL literal. =vec= it for an =IN= list; a vector in a value position is an
+expression, so an array parameter goes through the server (=raw= or a cast).
+
+* Testing
+
+** The offline suite
+
+#+begin_src sh
+npm install
+./run-tests.sh
+#+end_src
+
+The publicity gate (=test/publicity_gate.sh=) runs first: =src/= and =README.md= must
+carry no development-process narrative. Then the suite compiles (=npx shadow-cljs
+compile node-test --config-merge '{:autorun false}'=) and runs (=node
+target/node-test.js=). It is network-free by nature. The batteries, one per surface,
+pin exact SQL text: =format_test= (the select list, joins, every operator, set
+operations, CTEs, locking, the synopsis order, nested statements), =values_test= (=$N=
+order, pass-through, inline mode), =dml_test= and =dml_errors_test=, =ddl_test= and
+=ddl_errors_test=, =errors_test= (every malformed input with its =:op= and =:arg=),
+=helpers_test= (every builder's map and the composition rules), =util_test=,
+=core_test=. Two tests hold the documentation to the code:
+
+- =examples_test.cljs= runs every function of =dev/sql_cljs/examples.cljs= and holds
+  =README.md= to it: every code block between a =README:begin= / =README:end= mark
+  stands in the README as written, every one-liner stands with its value, every
+  result the README prints is the result the example returns. The README and the
+  examples source are read at compile time by the macros of
+  =test/sql_cljs/doctest.clj= (the tests stay pure ClojureScript); the namespace
+  carries =^:dev/always= so that it is never served from the compiler cache.
+- =api_index_test.cljs= reads the API reference below and the public vars of
+  =sql-cljs.core=, =sql-cljs.helpers= and =sql-cljs.util= from the compiler's
+  analysis, and fails when either names something the other does not.
+
+** The examples
+
+#+begin_src sh
+npx shadow-cljs compile examples && node target/examples.js
+#+end_src
+
+Offline; prints what the README shows and exits 0.
+
+** No live check
+
+There is no smoke build: the library produces text and sends nothing, so a live run
+would test the client and the server, not this library. The composition with pg-cljs
+(=(pg/query! client (sql/format q))=) is the README's "Going live" and is the
+application's to run.
+
+* API reference
+
+Signatures and semantics of every public var. The docstrings in =src/sql_cljs/=
+carry the full detail of each; the namespace docstring of =sql-cljs.core= lists every
+clause shape.
+
+** sql-cljs.core
+
+**** sql-cljs.core/api-version
+=api-version= — the version of the sql-cljs public surface, a string (="0.1.0"=).
+
+**** sql-cljs.core/format
+=(format query)=, =(format query opts)= — renders the statement map =query= to ={:text
+:values}=: =$1=, =$2=, ... in order of appearance and the values exactly as written.
+=opts= is =nil= or a map with the one key =:inline= (=true= renders every value as a
+literal and returns =:values []=). Throws =:sql-cljs/format-error= for anything
+malformed, including a bad =opts=.
+
+**** sql-cljs.core/raw
+=(raw sql)= — a fragment of SQL spliced verbatim wherever an expression, a name, a
+table, a condition, a type, a constraint, a statement operand or a CTE body is
+expected. =sql= must be a string (=:op :raw= otherwise). Not validated, not
+parameterized, not quoted: never built from untrusted input.
+
+** sql-cljs.helpers
+
+One builder per clause, each returning ={clause value}= and taking the statement
+being built as an optional first argument (merging the HoneySQL way: vectors
+concatenate, =where= / =having= AND together, maps merge, scalars replace). The
+helpers validate nothing. =for=, =set=, =update=, =group-by= and =distinct= shadow
+=cljs.core=: use an alias.
+
+**** sql-cljs.helpers/select
+=(select & items)= — ={:select [items...]}=; repeated, the items concatenate.
+
+**** sql-cljs.helpers/distinct
+=(distinct)= — ={:distinct true}=.
+
+**** sql-cljs.helpers/distinct-on
+=(distinct-on & columns)= — ={:distinct-on [columns...]}=.
+
+**** sql-cljs.helpers/from
+=(from & tables)= — ={:from [tables...]}=; a table is =:t=, =[:t :alias]= or a nested
+subquery pair =[{...} :alias]=.
+
+**** sql-cljs.helpers/join
+=(join & table-condition-pairs)= — ={:join [table condition ...]}=; the condition is an
+expression or =[:using :col ...]=.
+
+**** sql-cljs.helpers/inner-join
+=(inner-join & pairs)= — ={:inner-join [...]}=, the same pairs as =join=.
+
+**** sql-cljs.helpers/left-join
+=(left-join & pairs)= — ={:left-join [...]}=.
+
+**** sql-cljs.helpers/right-join
+=(right-join & pairs)= — ={:right-join [...]}=.
+
+**** sql-cljs.helpers/full-join
+=(full-join & pairs)= — ={:full-join [...]}=.
+
+**** sql-cljs.helpers/cross-join
+=(cross-join & tables)= — ={:cross-join [tables...]}=, no conditions.
+
+**** sql-cljs.helpers/where
+=(where & predicates)= — ={:where predicate}=; several predicates, or a repeated
+=where=, combine as =[:and ...]=. Next to =create-index= it is the partial-index
+predicate. =(where)= adds nothing.
+
+**** sql-cljs.helpers/group-by
+=(group-by & expressions)= — ={:group-by [expressions...]}=.
+
+**** sql-cljs.helpers/having
+=(having & predicates)= — ={:having predicate}=, combined like =where=.
+
+**** sql-cljs.helpers/order-by
+=(order-by & items)= — ={:order-by [items...]}=; an item is =:a= or =[expr :desc
+:nulls-last]=.
+
+**** sql-cljs.helpers/limit
+=(limit n)=, =(limit m n)= — ={:limit n}=.
+
+**** sql-cljs.helpers/offset
+=(offset n)=, =(offset m n)= — ={:offset n}=.
+
+**** sql-cljs.helpers/union
+=(union & statements)= — ={:union [statements...]}=; every argument is an operand, it
+never threads.
+
+**** sql-cljs.helpers/union-all
+=(union-all & statements)= — ={:union-all [statements...]}=; never threads.
+
+**** sql-cljs.helpers/with
+=(with & ctes)= — ={:with [[name statement] ...]}=; a CTE is =[:c {...}]= or =[[:c :col
+...] {...}]=.
+
+**** sql-cljs.helpers/with-recursive
+=(with-recursive & ctes)= — ={:with-recursive [...]}=, the same items as =with=.
+
+**** sql-cljs.helpers/for
+=(for strength & tables-and-option)= — ={:for [strength tables... option]}=: =(for
+:update)= is ={:for [:update]}=, =(for :update :t :nowait)= is ={:for [:update :t
+:nowait]}=.
+
+**** sql-cljs.helpers/insert-into
+=(insert-into table)= — ={:insert-into table}=; =table= is =:t= or =[:t :alias]=.
+
+**** sql-cljs.helpers/columns
+=(columns & items)= — ={:columns [items...]}=: the column list of =INSERT= or =CREATE
+VIEW=, the column definitions of =CREATE TABLE= (=(columns [:id :serial :primary-key]
+[:name :text])=), the indexed columns of =CREATE INDEX=.
+
+**** sql-cljs.helpers/values
+=(values rows)=, =(values m rows)= — ={:values rows}=; ONE argument, the vector of
+rows (vectors or maps) or a statement map for =INSERT ... SELECT=. Repeated, the rows
+concatenate.
+
+**** sql-cljs.helpers/on-conflict
+=(on-conflict & columns)= — ={:on-conflict {:on-columns [columns...]}}=; =(on-conflict)=
+is ={:on-conflict {}}= (no target, for =do-nothing=). The other =on-conflict= helpers
+merge their key into the same map.
+
+**** sql-cljs.helpers/on-constraint
+=(on-constraint name)= — ={:on-conflict {:on-constraint name}}=.
+
+**** sql-cljs.helpers/index-where
+=(index-where & predicates)= — ={:on-conflict {:index-where predicate}}=, the index
+predicate of the inference, combined like =where=.
+
+**** sql-cljs.helpers/do-nothing
+=(do-nothing)= — ={:on-conflict {:do-nothing true}}=.
+
+**** sql-cljs.helpers/do-update-set
+=(do-update-set assignments)=, =(do-update-set m assignments)= — ={:on-conflict
+{:do-update-set assignments}}=; ONE argument, a map or a vector of pairs, as =set=.
+
+**** sql-cljs.helpers/do-update-where
+=(do-update-where & predicates)= — ={:on-conflict {:where predicate}}=, the condition
+of =DO UPDATE=, combined like =where=.
+
+**** sql-cljs.helpers/returning
+=(returning & items)= — ={:returning [items...]}=; =(returning :*)= is ={:returning
+[:*]}=.
+
+**** sql-cljs.helpers/update
+=(update table)= — ={:update table}=; =table= is =:t= or =[:t :alias]=.
+
+**** sql-cljs.helpers/set
+=(set assignments)=, =(set m assignments)= — ={:set assignments}=; ONE argument, a map
+={:a 1 :b :c}= or a vector of pairs =[[:a 1] [:b :c]]= (the pairs keep the order past
+eight). Repeated with the same shape, maps merge and pair vectors concatenate.
+
+**** sql-cljs.helpers/delete-from
+=(delete-from table)= — ={:delete-from table}=.
+
+**** sql-cljs.helpers/using
+=(using & tables)= — ={:using [tables...]}=: the =USING= tables of =DELETE=; next to
+=create-index=, =(using :gin)= names the index method (one item).
+
+**** sql-cljs.helpers/truncate
+=(truncate & tables)= — ={:truncate [tables...]}=.
+
+**** sql-cljs.helpers/restart-identity
+=(restart-identity)= — ={:restart-identity true}=.
+
+**** sql-cljs.helpers/continue-identity
+=(continue-identity)= — ={:continue-identity true}=.
+
+**** sql-cljs.helpers/cascade
+=(cascade)= — ={:cascade true}=: =TRUNCATE=, =DROP TABLE= / =INDEX= / =VIEW=.
+
+**** sql-cljs.helpers/restrict
+=(restrict)= — ={:restrict true}=.
+
+**** sql-cljs.helpers/create-table
+=(create-table table)= — ={:create-table table}=; the definitions come from =columns=,
+the table constraints from =constraints=.
+
+**** sql-cljs.helpers/if-not-exists
+=(if-not-exists)= — ={:if-not-exists true}=: =CREATE TABLE= / =INDEX=.
+
+**** sql-cljs.helpers/constraints
+=(constraints & table-constraints)= — ={:constraints [...]}=; repeated, they
+concatenate.
+
+**** sql-cljs.helpers/drop-table
+=(drop-table & tables)= — ={:drop-table [tables...]}=.
+
+**** sql-cljs.helpers/if-exists
+=(if-exists)= — ={:if-exists true}=: =DROP TABLE= / =INDEX= / =VIEW=, =ALTER TABLE=.
+
+**** sql-cljs.helpers/alter-table
+=(alter-table table)= — ={:alter-table table}=; the actions come from =add-column=,
+=drop-column= and =rename-column=, which concatenate into =:actions=.
+
+**** sql-cljs.helpers/add-column
+=(add-column definition & options)= — ={:actions [[:add-column definition
+options...]]}=; the definition is ONE argument, the column vector of =create-table=;
+the option is =:if-not-exists=.
+
+**** sql-cljs.helpers/drop-column
+=(drop-column name & options)= — ={:actions [[:drop-column name options...]]}=; options
+=:if-exists=, =:cascade= / =:restrict=.
+
+**** sql-cljs.helpers/rename-column
+=(rename-column old new)= — ={:actions [[:rename-column old new]]}=.
+
+**** sql-cljs.helpers/create-index
+=(create-index)=, =(create-index name)= — ={:create-index name}= (=nil= for an unnamed
+index); =(create-index m)= and =(create-index m name)= thread. The table comes from
+=on=, the columns from =columns=, the method from =using=, the predicate from =where=.
+
+**** sql-cljs.helpers/unique
+=(unique)= — ={:unique true}=: =CREATE UNIQUE INDEX=.
+
+**** sql-cljs.helpers/concurrently
+=(concurrently)= — ={:concurrently true}=: =CREATE INDEX= / =DROP INDEX=.
+
+**** sql-cljs.helpers/on
+=(on table)= — ={:on table}=, the table of =CREATE INDEX=.
+
+**** sql-cljs.helpers/drop-index
+=(drop-index & indexes)= — ={:drop-index [indexes...]}=.
+
+**** sql-cljs.helpers/create-view
+=(create-view view)= — ={:create-view view}=; the body comes from =as=, the column
+names from =columns=.
+
+**** sql-cljs.helpers/or-replace
+=(or-replace)= — ={:or-replace true}=: =CREATE OR REPLACE VIEW=.
+
+**** sql-cljs.helpers/as
+=(as body)=, =(as m body)= — ={:as body}=; ONE argument, a statement map or a =raw=
+fragment.
+
+**** sql-cljs.helpers/drop-view
+=(drop-view & views)= — ={:drop-view [views...]}=.
+
+** sql-cljs.util
+
+The engine internals, shared by every formatter: pure, no I/O. Public so that the
+engine and anyone extending it decide the entity rule, the error shape and the
+literal spellings in exactly one place each; the documented path never needs them.
+
+**** sql-cljs.util/format-error
+=(format-error op arg message)=, =(format-error op arg message data)= — the =ex-info= of
+=:sql-cljs/format-error=: message prefixed ="sql-cljs: "=, data ={:type :message :op
+:arg}= merged with =data= (=:entity=, =:allowed=).
+
+**** sql-cljs.util/IRaw
+=IRaw= — the protocol of a raw fragment: one method, =raw-sql=.
+
+**** sql-cljs.util/raw-sql
+=(raw-sql x)= — the verbatim SQL text of a raw fragment.
+
+**** sql-cljs.util/Raw
+=Raw= — the type of a raw fragment (one field, =sql=); equal by text, prints as
+=#sql-cljs/raw "..."=.
+
+**** sql-cljs.util/->Raw
+=(->Raw sql)= — the positional constructor of =Raw=; use =sql-cljs.core/raw=, which
+checks the argument.
+
+**** sql-cljs.util/raw?
+=(raw? x)= — true for a raw fragment.
+
+**** sql-cljs.util/make-raw
+=(make-raw op sql)= — the raw fragment of the string =sql=; a non-string is a
+format-error with =:op op=. =sql-cljs.core/raw= is =(make-raw :raw sql)=.
+
+**** sql-cljs.util/entity?
+=(entity? x)= — true for a keyword or a symbol: a name, never a value.
+
+**** sql-cljs.util/identifier-pattern
+=identifier-pattern= — =#"^[a-z_][a-z0-9_$]*$"=, what one dot-separated part of an
+entity must match to be emitted bare.
+
+**** sql-cljs.util/entity-parts
+=(entity-parts x)= — the parts of an entity split on =.= and =/= (=:foo/bar= is =["foo"
+"bar"]=), empty parts kept for the validator.
+
+**** sql-cljs.util/star?
+=(star? x)= — true when the entity ends in the star element (=:*=, =:t/*=, =:t.*=).
+
+**** sql-cljs.util/entity-name
+=(entity-name op x star?)= — the SQL text of the entity =x=, parts joined with dots,
+never quoted; a format-error (=:op op=, =:arg= the part, =:entity x=) for a non-entity
+or a part outside =identifier-pattern=; the star is accepted as the last part only
+when =star?= is true.
+
+**** sql-cljs.util/operator-shaped?
+=(operator-shaped? k)= — true when the keyword or symbol has no letter in its name
+(=:<=>=, =:||=): an operator, never a function name.
+
+**** sql-cljs.util/literal
+=(literal x)= — the SQL literal of =x= for inline mode: =nil= → =NULL=, string → ='...'=
+with quotes doubled, booleans → =TRUE= / =FALSE=, numbers and BigInts → decimal text;
+=NaN=, infinities and anything else are a format-error with =:op :inline=.
