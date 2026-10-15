@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Data modification: `INSERT INTO` (alias, column list, multi-row `VALUES` as
+  vectors or as maps sharing one key set, `DEFAULT` spelled `:default`,
+  `INSERT ... SELECT` from a statement map, `ON CONFLICT` with column or
+  expression targets, an index predicate or `ON CONSTRAINT`, `DO NOTHING` or
+  `DO UPDATE SET ... WHERE`, `RETURNING`), `UPDATE` (`SET` from a map or a
+  vector of pairs, `FROM`, `WHERE`, `RETURNING`), `DELETE FROM` (`USING`,
+  `WHERE`, `RETURNING`), `TRUNCATE TABLE` with the identity and cascade
+  flags, `WITH` before each; the statement validator reports a clause that
+  does not apply next to the statement's head with the head as `:op`.
+- `sql-cljs.helpers`: one builder function per clause, returning the plain
+  statement map, threading on an optional leading map and merging repeated
+  clauses the HoneySQL way.
 - The format engine and the query surface: `sql-cljs.core/format` renders a
   statement map to `{:text :values}` with `$N` placeholders in order of
   appearance and values passed through untouched, or with every value inlined

@@ -38,6 +38,32 @@
    - :for, :update or [:update :t1 :t2 :nowait]; strengths :update,
      :no-key-update, :share, :key-share; options :nowait or :skip-locked.
 
+   Data modification, one head per statement (:with applies to all three
+   of INSERT, UPDATE and DELETE):
+
+   - :insert-into :t or [:t :alias] (always INSERT INTO t AS alias), with
+     :columns [:a :b] and :values, a vector of rows: vectors, [[1 \"x\"] [2
+     \"y\"]], or maps, [{:a 1 :b \"x\"}], whose keys become the column list
+     (the first map's order, or the :columns order) and must be the same in
+     every row. :default in a value slot is the DEFAULT key word in both
+     modes. A statement map as :values is INSERT ... SELECT.
+   - :on-conflict, a map: the target, :on-columns [:id] (a column or an
+     index expression vector, [:lower :email]) with an optional :index-where
+     predicate, or :on-constraint :name, or neither (DO NOTHING only); the
+     action, :do-nothing true or :do-update-set (a map or a vector of pairs
+     like :set, :excluded/col naming the proposed row) with an optional
+     :where condition.
+   - :returning, the same items as :select: :id, [:*], [[:lower :name] :n].
+   - :update :t or [:t :alias] with :set, a map {:a 1 :b :c} or a vector of
+     [column expression] pairs (the vector keeps the order past eight
+     assignments); columns are never table-qualified; :default assigns the
+     default. Then :from (as in SELECT), :where, :returning.
+   - :delete-from :t or [:t :alias], then :using (a FROM list), :where,
+     :returning.
+   - :truncate :t or [:t :u], always TRUNCATE TABLE, with the flags
+     :restart-identity / :continue-identity and :cascade / :restrict, each
+     true or false.
+
    Expressions: [:= a b] [:not= a b] (<>) [:<> a b] [:< a b] [:> a b]
    [:<= a b] [:>= a b], [:and ...] [:or ...] [:not x], [:+ ...] [:- ...]
    [:* ...] [:/ ...] [:% ...] ([:- x] alone is unary minus), [:in x [...]]
@@ -386,28 +412,30 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- select-item
-  [ctx x]
+  "An item of an output list (SELECT, RETURNING): an entity, the star, a
+   subquery, a raw fragment, [expression] or [expression alias]."
+  [ctx op x]
   (cond
     (vector? x)
     (case (count x)
-      1 (expression ctx :select (first x) true)
-      2 (str (expression ctx :select (first x) true) " AS " (alias-name :select (second x) (first x)))
-      (throw (u/format-error :select x
-                             (str "a vector in :select is [expression] or [expression alias], got "
+      1 (expression ctx op (first x) true)
+      2 (str (expression ctx op (first x) true) " AS " (alias-name op (second x) (first x)))
+      (throw (u/format-error op x
+                             (str "a vector in " (pr-str op) " is [expression] or [expression alias], got "
                                   (pr-str x) "; a function call is nested: [[:count :*]] or"
                                   " [[:count :*] :total]"))))
 
     (or (u/entity? x) (u/raw? x) (map? x))
-    (expression ctx :select x true)
+    (expression ctx op x true)
 
     (collection-in-expression? x)
-    (expression ctx :select x true)
+    (expression ctx op x true)
 
     :else
-    (throw (u/format-error :select x
+    (throw (u/format-error op x
                            (str (pr-str x) " is a value, not a column"
                                 (when (string? x) " (strings are values, never names)")
-                                "; to select a value as a parameter write it nested, [["
+                                "; to return a value as a parameter write it nested, [["
                                 (pr-str x) "]], or use the raw escape hatch")))))
 
 (defn- emit-select
@@ -431,7 +459,7 @@
                                                  (pr-str (:distinct m))))))
 
                    :else "")
-        items (mapv #(select-item ctx %) (list-of :select (:select m)))]
+        items (mapv #(select-item ctx :select %) (list-of :select (:select m)))]
     (str "SELECT " modifier (str/join ", " items))))
 
 (defn- emit-from
@@ -621,38 +649,339 @@
          (when option (str " " option)))))
 
 ;; ---------------------------------------------------------------------------
+;; Data modification: INSERT, UPDATE, DELETE, TRUNCATE
+;; ---------------------------------------------------------------------------
+
+(defn- target-base
+  [op t]
+  (cond
+    (u/entity? t) (u/entity-name op t false)
+    (u/raw? t) (u/raw-sql t)
+    :else (throw (u/format-error op t
+                                 (str "the target table of " (pr-str op) " is a keyword or symbol"
+                                      " (or a raw fragment), got " (pr-str t)
+                                      (when (string? t) " (strings are values, never names)")
+                                      (when (map? t) " (a subquery is never a target)"))))))
+
+(defn- target-ref
+  "The target table of INSERT INTO, UPDATE and DELETE FROM: t, [t] or
+   [t :alias], always rendered with AS."
+  [op x]
+  (if (vector? x)
+    (case (count x)
+      1 (target-base op (first x))
+      2 (str (target-base op (first x)) " AS " (alias-name op (second x) (first x)))
+      (throw (u/format-error op x
+                             (str (pr-str op) " is a table or [table alias], got " (pr-str x)))))
+    (target-base op x)))
+
+(defn- default?
+  [x]
+  (= :default (kw x)))
+
+(defn- value-or-default
+  "An element of a VALUES row or the right-hand side of an assignment:
+   :default is the DEFAULT key word (in both modes), anything else an
+   expression."
+  [ctx op x]
+  (if (default? x) "DEFAULT" (expression ctx op x)))
+
+(defn- assignment-column
+  "The column of a SET assignment: a plain, never table-qualified, entity."
+  [op c]
+  (when (and (u/entity? c) (< 1 (count (u/entity-parts c))))
+    (throw (u/format-error op c
+                           (str "the column of an assignment is never table-qualified (SET col = ..., not"
+                                " SET t.col = ...), got " (pr-str c)))))
+  (u/entity-name op c false))
+
+(defn- assignments
+  "The assignments of SET and DO UPDATE SET: a map {column expression} or a
+   vector of [column expression] pairs, rendered col = expr, comma-separated
+   in the order given (a map with more than eight entries iterates in hash
+   order, so the vector form is the one that keeps the caller's order)."
+  [ctx op x]
+  (let [pairs (cond
+                (map? x) (seq x)
+                (vector? x) (do (doseq [p x]
+                                  (when-not (and (vector? p) (= 2 (count p)))
+                                    (throw (u/format-error op p
+                                                           (str "an assignment in a vector " (pr-str op)
+                                                                " is a [column expression] pair, got "
+                                                                (pr-str p))))))
+                                x)
+                :else (throw (u/format-error op x
+                                             (str (pr-str op) " is a map {column expression} or a vector"
+                                                  " of [column expression] pairs, got " (pr-str x)))))]
+    (when (empty? pairs)
+      (throw (u/format-error op x (str (pr-str op) " needs at least one assignment"))))
+    (str/join ", " (mapv (fn [[c v]]
+                           (str (assignment-column op c) " = " (value-or-default ctx op v)))
+                         pairs))))
+
+;; INSERT
+
+(defn- insert-columns
+  "The column list of an INSERT as [op columns]: :columns when given, else
+   the keys of the first row when :values is a vector of maps, else nil."
+  [m]
+  (let [v (:values m)]
+    (cond
+      (contains? m :columns) [:columns (list-of :columns (:columns m))]
+      (and (sequential? v) (map? (first v))) [:values (vec (keys (first v)))]
+      :else nil)))
+
+(defn- emit-insert-into
+  [_ctx m k]
+  (let [[op cols] (insert-columns m)]
+    (str "INSERT INTO " (target-ref k (get m k))
+         (when (seq cols)
+           (str " (" (str/join ", " (mapv #(u/entity-name op % false) cols)) ")")))))
+
+(defn- row-of-map
+  "The values of a map row in column order; the row must have exactly the
+   column keys."
+  [k cols row]
+  (when (empty? row)
+    (throw (u/format-error k row "a map row of :values must have at least one column")))
+  (when-not (= (set (keys row)) (set cols))
+    (throw (u/format-error k row
+                           (str "every map in :values must have the same keys, the columns "
+                                (pr-str cols) "; got " (pr-str row)
+                                " (a column a row leaves out is written :default)")
+                           {:columns cols})))
+  (mapv #(get row %) cols))
+
+(defn- values-row
+  [k maps? cols row]
+  (cond
+    (not= maps? (map? row))
+    (throw (u/format-error k row
+                           (str ":values mixes vector rows and map rows; use one shape for every row,"
+                                " got " (pr-str row))))
+    maps? (row-of-map k cols row)
+    (sequential? row) (vec row)
+    :else
+    (throw (u/format-error k row
+                           (str "a row of :values is a vector of values, [1 \"x\"], or a map"
+                                " {:a 1 :b \"x\"}, and :values is a vector of rows: [[1 \"x\"]]; got "
+                                (pr-str row))))))
+
+(defn- emit-values
+  [ctx m k]
+  (let [v (get m k)]
+    (cond
+      (map? v) (statement ctx v)
+      (u/raw? v) (u/raw-sql v)
+      (sequential? v)
+      (let [rows (vec v)
+            _ (when (empty? rows)
+                (throw (u/format-error k v ":values must not be empty: one row at least, [[1 2]] or [{:a 1}]")))
+            maps? (map? (first rows))
+            [_ cols] (insert-columns m)
+            rows (mapv #(values-row k maps? cols %) rows)
+            width (count (first rows))]
+        (doseq [row rows]
+          (when (empty? row)
+            (throw (u/format-error k row "a row of :values must not be empty")))
+          (when-not (= width (count row))
+            (throw (u/format-error k row
+                                   (str "every row of :values has the same number of values, the first has "
+                                        width ", got " (pr-str row))))))
+        (when (and (seq cols) (not= width (count cols)))
+          (throw (u/format-error k (first rows)
+                                 (str ":columns lists " (count cols) " columns but a row of :values has "
+                                      width " values: " (pr-str (first rows)))
+                                 {:columns cols})))
+        (str "VALUES "
+             (str/join ", " (mapv (fn [row]
+                                    (str "(" (str/join ", " (mapv #(value-or-default ctx k %) row)) ")"))
+                                  rows))))
+      :else
+      (throw (u/format-error k v
+                             (str ":values is a vector of rows ([[1 2] [3 4]] or [{:a 1} {:a 2}]) or a"
+                                  " statement map (INSERT ... SELECT), got " (pr-str v)))))))
+
+(def ^:private on-conflict-keys
+  [:on-columns :on-constraint :index-where :do-nothing :do-update-set :where])
+
+(defn- conflict-target-item
+  [ctx k x]
+  (cond
+    (u/entity? x) (u/entity-name k x false)
+    (u/raw? x) (u/raw-sql x)
+    (vector? x) (str "(" (expression ctx k x) ")")
+    :else (throw (u/format-error k x
+                                 (str "an item of :on-columns is a column or an index expression vector"
+                                      " ([:lower :email]), got " (pr-str x))))))
+
+(defn- flag
+  "The boolean of a flag key: true, false or absent (nil); anything else is
+   a format-error with :op k."
+  [m k]
+  (let [v (get m k)]
+    (cond
+      (true? v) true
+      (or (nil? v) (false? v)) false
+      :else (throw (u/format-error k v (str (pr-str k) " must be true or false, got " (pr-str v)))))))
+
+(defn- emit-on-conflict
+  [ctx m k]
+  (let [c (get m k)]
+    (when-not (map? c)
+      (throw (u/format-error k c
+                             (str ":on-conflict is a map with :on-columns or :on-constraint and"
+                                  " :do-nothing true or :do-update-set, e.g."
+                                  " {:on-columns [:id] :do-update-set {:a :excluded/a}}; got " (pr-str c)))))
+    (doseq [x (keys c)]
+      (when-not (contains? (set on-conflict-keys) x)
+        (throw (u/format-error k x
+                               (str "unknown key " (pr-str x) " in :on-conflict; the keys are listed under :allowed")
+                               {:allowed on-conflict-keys}))))
+    (let [nothing? (flag c :do-nothing)
+          update? (contains? c :do-update-set)]
+      (when (and (contains? c :on-columns) (contains? c :on-constraint))
+        (throw (u/format-error k (select-keys c [:on-columns :on-constraint])
+                               ":on-columns and :on-constraint cannot both be given")))
+      (when (and (contains? c :index-where) (not (contains? c :on-columns)))
+        (throw (u/format-error k (:index-where c)
+                               ":index-where is the predicate of the :on-columns index inference and needs :on-columns")))
+      (when-not (or nothing? update?)
+        (throw (u/format-error k c
+                               ":on-conflict needs its action, :do-nothing true or :do-update-set {...}")))
+      (when (and nothing? update?)
+        (throw (u/format-error k (select-keys c [:do-nothing :do-update-set])
+                               ":do-nothing and :do-update-set cannot both be given")))
+      (when (and (contains? c :where) (not update?))
+        (throw (u/format-error k (:where c)
+                               ":where in :on-conflict is the condition of DO UPDATE and needs :do-update-set")))
+      (str "ON CONFLICT"
+           (when (contains? c :on-columns)
+             (str " ("
+                  (str/join ", " (mapv #(conflict-target-item ctx k %) (list-of k (:on-columns c))))
+                  ")"
+                  (when (contains? c :index-where)
+                    (str " " ((condition "WHERE") ctx c :index-where)))))
+           (when (contains? c :on-constraint)
+             (str " ON CONSTRAINT " (u/entity-name k (:on-constraint c) false)))
+           (if nothing?
+             " DO NOTHING"
+             (str " DO UPDATE SET " (assignments ctx :do-update-set (:do-update-set c))
+                  (when (contains? c :where)
+                    (str " " ((condition "WHERE") ctx c :where)))))))))
+
+(defn- emit-returning
+  [ctx m k]
+  (str "RETURNING " (str/join ", " (mapv #(select-item ctx k %) (list-of k (get m k))))))
+
+;; UPDATE and DELETE
+
+(defn- emit-update
+  [_ctx m k]
+  (str "UPDATE " (target-ref k (get m k))))
+
+(defn- emit-set
+  [ctx m k]
+  (str "SET " (assignments ctx k (get m k))))
+
+(defn- emit-delete-from
+  [_ctx m k]
+  (str "DELETE FROM " (target-ref k (get m k))))
+
+(defn- emit-using
+  [ctx m k]
+  (str "USING " (str/join ", " (mapv #(table-ref ctx k %) (list-of k (get m k))))))
+
+;; TRUNCATE
+
+(defn- emit-truncate
+  [_ctx m k]
+  (when (and (flag m :restart-identity) (flag m :continue-identity))
+    (throw (u/format-error k (select-keys m [:restart-identity :continue-identity])
+                           ":restart-identity and :continue-identity cannot both be true")))
+  (when (and (flag m :cascade) (flag m :restrict))
+    (throw (u/format-error k (select-keys m [:cascade :restrict])
+                           ":cascade and :restrict cannot both be true")))
+  (str "TRUNCATE TABLE "
+       (str/join ", " (mapv #(target-base k %) (list-of k (get m k))))
+       (when (flag m :restart-identity) " RESTART IDENTITY")
+       (when (flag m :continue-identity) " CONTINUE IDENTITY")
+       (when (flag m :cascade) " CASCADE")
+       (when (flag m :restrict) " RESTRICT")))
+
+;; ---------------------------------------------------------------------------
 ;; Statements
 ;; ---------------------------------------------------------------------------
 
 (def ^:private clause-emitters
-  "Every clause of a query in emission order (the PostgreSQL synopsis order)."
-  [[:with emit-with]
-   [:with-recursive emit-with]
-   [:select emit-select]
-   [:from emit-from]
-   [:join (emit-join "INNER JOIN")]
-   [:inner-join (emit-join "INNER JOIN")]
-   [:left-join (emit-join "LEFT JOIN")]
-   [:right-join (emit-join "RIGHT JOIN")]
-   [:full-join (emit-join "FULL JOIN")]
-   [:cross-join emit-cross-join]
-   [:where (condition "WHERE")]
-   [:group-by emit-group-by]
-   [:having (condition "HAVING")]
-   [:union (emit-union "UNION")]
-   [:union-all (emit-union "UNION ALL")]
-   [:order-by emit-order-by]
-   [:limit (emit-count "LIMIT" true)]
-   [:offset (emit-count "OFFSET" false)]
-   [:for emit-for]])
+  "Every emitting clause key and its emitter, (fn [ctx statement-map key])
+   -> text. The emission order is per statement kind, in statement-kinds."
+  {:with emit-with
+   :with-recursive emit-with
+   :select emit-select
+   :from emit-from
+   :join (emit-join "INNER JOIN")
+   :inner-join (emit-join "INNER JOIN")
+   :left-join (emit-join "LEFT JOIN")
+   :right-join (emit-join "RIGHT JOIN")
+   :full-join (emit-join "FULL JOIN")
+   :cross-join emit-cross-join
+   :where (condition "WHERE")
+   :group-by emit-group-by
+   :having (condition "HAVING")
+   :union (emit-union "UNION")
+   :union-all (emit-union "UNION ALL")
+   :order-by emit-order-by
+   :limit (emit-count "LIMIT" true)
+   :offset (emit-count "OFFSET" false)
+   :for emit-for
+   :insert-into emit-insert-into
+   :values emit-values
+   :on-conflict emit-on-conflict
+   :returning emit-returning
+   :update emit-update
+   :set emit-set
+   :delete-from emit-delete-from
+   :using emit-using
+   :truncate emit-truncate})
+
+(def ^:private set-operation-clauses
+  [:with :with-recursive :union :union-all :order-by :limit :offset])
+
+(def ^:private statement-kinds
+  "Per statement head: :order, the emitting clauses of that statement kind
+   in emission order (the PostgreSQL synopsis order); :modifiers, the keys
+   another clause's emitter consumes; :required, the clauses the head cannot
+   do without. A key outside :order and :modifiers is not accepted next to
+   that head."
+  {:select {:order [:with :with-recursive :select :from :join :inner-join :left-join :right-join
+                    :full-join :cross-join :where :group-by :having :order-by :limit :offset :for]
+            :modifiers #{:distinct :distinct-on}}
+   :union {:order set-operation-clauses}
+   :union-all {:order set-operation-clauses}
+   :insert-into {:order [:with :with-recursive :insert-into :values :on-conflict :returning]
+                 :modifiers #{:columns}
+                 :required [:values]}
+   :update {:order [:with :with-recursive :update :set :from :where :returning]
+            :required [:set]}
+   :delete-from {:order [:with :with-recursive :delete-from :using :where :returning]}
+   :truncate {:order [:truncate]
+              :modifiers #{:restart-identity :continue-identity :cascade :restrict}}})
+
+(def ^:private heads
+  "The statement heads, in the order the one-head check reports them."
+  [:select :union :union-all :insert-into :update :delete-from :truncate])
 
 (def ^:private clause-keys
-  (into #{:distinct :distinct-on} (map first) clause-emitters))
+  "Every clause key of every statement kind."
+  (into (set (keys clause-emitters))
+        (mapcat :modifiers)
+        (vals statement-kinds)))
 
-(def ^:private heads #{:select :union :union-all})
-
-(def ^:private union-clauses
-  #{:with :with-recursive :union :union-all :order-by :limit :offset})
+(defn- allowed-clauses
+  [head]
+  (let [kind (get statement-kinds head)]
+    (into (set (:order kind)) (:modifiers kind))))
 
 (defn- statement
   [ctx m]
@@ -665,29 +994,37 @@
       (throw (u/format-error :statement k
                              (str "unknown clause " (pr-str k) "; the clauses are listed under :allowed")
                              {:allowed (vec (sort clause-keys))}))))
-  (let [present-heads (filterv #(contains? m %) [:select :union :union-all])]
+  (let [present-heads (filterv #(contains? m %) heads)
+        head (first present-heads)
+        kind (get statement-kinds head)
+        allowed (allowed-clauses head)]
     (when-not (= 1 (count present-heads))
       (throw (u/format-error :statement m
-                             (str "a statement has exactly one of :select, :union, :union-all; got "
+                             (str "a statement has exactly one of " (pr-str heads) "; got "
                                   (pr-str present-heads)))))
     (when (and (contains? m :with) (contains? m :with-recursive))
       (throw (u/format-error :statement (select-keys m [:with :with-recursive])
                              ":with and :with-recursive cannot both be given")))
-    (when (not= :select (first present-heads))
-      (doseq [k (keys m)]
-        (when-not (contains? union-clauses k)
-          (throw (u/format-error (first present-heads) k
-                                 (str (pr-str k) " does not apply to a set operation; next to "
-                                      (pr-str (first present-heads)) " only " (pr-str (vec (sort union-clauses)))
-                                      " are accepted, the rest belong inside each operand")
-                                 {:allowed (vec (sort union-clauses))}))))))
-  (str/join " "
-            (reduce (fn [acc [k emit]]
-                      (if (contains? m k)
-                        (conj acc (emit ctx m k))
-                        acc))
-                    []
-                    clause-emitters)))
+    (doseq [k (keys m)]
+      (when-not (contains? allowed k)
+        (throw (u/format-error head k
+                               (str (pr-str k) " does not apply to " (pr-str head) "; next to "
+                                    (pr-str head) " only " (pr-str (vec (sort allowed)))
+                                    " are accepted"
+                                    (when (contains? #{:union :union-all} head)
+                                      ", the rest belong inside each operand"))
+                               {:allowed (vec (sort allowed))}))))
+    (doseq [k (:required kind)]
+      (when-not (contains? m k)
+        (throw (u/format-error head m
+                               (str (pr-str head) " needs " (pr-str k) ", got " (pr-str (vec (keys m))))))))
+    (str/join " "
+              (reduce (fn [acc k]
+                        (if (contains? m k)
+                          (conj acc ((get clause-emitters k) ctx m k))
+                          acc))
+                      []
+                      (:order kind)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Entry point
@@ -711,7 +1048,8 @@
      is SQL injection.
 
    Anything malformed (a value where a name is required, a mixed-case or
-   exotic entity, an unknown clause or operator, an empty :select, ...) is a
+   exotic entity, an unknown clause or operator, an empty :select, an
+   UPDATE without :set, rows of :values with different shapes, ...) is a
    :sql-cljs/format-error with :op and :arg; see sql-cljs.util/format-error."
   ([query] (format query nil))
   ([query opts]

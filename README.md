@@ -12,10 +12,14 @@ is asynchronous, and nothing touches the network.
 This README grows into the full shape shared by the sibling libraries
 (requirements, an offline quick start, going live, scenarios, pure helpers, the error
 taxonomy, features, settings, documentation and layout) as the surface is built. The
-query side is in place: `format` renders `SELECT` statements (with `DISTINCT`, `FROM`,
-joins, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` / `OFFSET`, `UNION`, `WITH`
-and locking clauses) and the expression operators, `raw` splices verbatim SQL, and
-`{:inline true}` renders every value as a literal for consoles and debugging.
+query and data-modification sides are in place: `format` renders `SELECT` statements
+(with `DISTINCT`, `FROM`, joins, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` /
+`OFFSET`, `UNION`, `WITH` and locking clauses) and the expression operators, `INSERT`
+(multi-row `VALUES`, rows as maps, `DEFAULT`, `INSERT ... SELECT`, `ON CONFLICT`,
+`RETURNING`), `UPDATE` (`SET`, `FROM`), `DELETE` (`USING`) and `TRUNCATE`; `raw`
+splices verbatim SQL, `{:inline true}` renders every value as a literal for consoles
+and debugging, and `sql-cljs.helpers` offers one builder function per clause that
+returns the same plain maps.
 
 ## Requirements
 
@@ -49,8 +53,36 @@ named functions of `examples.cljs` with the text they produce.
 
 ## Pure helpers
 
-Every function of this library is a pure helper; the builder functions and `format`
-will be listed here with `;; =>` results.
+Every function of this library is a pure helper. The data is the API; the builders of
+`sql-cljs.helpers` are sugar that returns the same maps and threads on an optional
+leading statement:
+
+```clojure
+(require '[sql-cljs.core :as sql] '[sql-cljs.helpers :as h])
+
+(-> (h/select :a [[:count :*] :n]) (h/from :t) (h/where [:= :a 1]) (h/group-by :a))
+;; => {:select [:a [[:count :*] :n]] :from [:t] :where [:= :a 1] :group-by [:a]}
+
+(def upsert
+  (-> (h/insert-into :t) (h/values [{:id 1 :name "x"}])
+      (h/on-conflict :id) (h/do-update-set {:name :excluded/name}) (h/returning :id)))
+upsert
+;; => {:insert-into :t :values [{:id 1 :name "x"}]
+;;     :on-conflict {:on-columns [:id] :do-update-set {:name :excluded/name}}
+;;     :returning [:id]}
+(sql/format upsert)
+;; => {:text "INSERT INTO t (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = excluded.name RETURNING id"
+;;     :values [1 "x"]}
+```
+
+A repeated clause merges the HoneySQL way: vector clauses concatenate (`(-> (select
+:a) (select :b))` is `{:select [:a :b]}`), `where` / `having` combine with `[:and
+...]`, map clauses (`set`, the `on-conflict` family) merge, scalar clauses replace.
+Since a leading map is the statement being built, a subquery given as a clause item is
+written nested, `(h/from [[{:select [:a] :from [:u]} :s]])`; `union` / `union-all`
+take operands only and never thread. The helpers validate nothing: malformed data
+fails in `format`. There is no `build` function; `merge` on the maps is the same
+thing.
 
 ## Error handling
 
@@ -59,8 +91,31 @@ table of kinds and data keys will live here.
 
 ## Features
 
-The covered PostgreSQL grammar (queries, expressions and operators, data
-modification, data definition) will be listed here, one capability per bullet.
+The covered PostgreSQL grammar, one capability per bullet (data definition to come):
+
+- `SELECT` with `DISTINCT` / `DISTINCT ON`, `FROM` with aliases and subqueries,
+  `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS JOIN` with `ON` and `USING`, `WHERE`,
+  `GROUP BY`, `HAVING`, `ORDER BY` with directions and `NULLS FIRST` / `LAST`,
+  `LIMIT` / `OFFSET`, `UNION` / `UNION ALL`, `WITH` / `WITH RECURSIVE`, `FOR UPDATE`
+  / `SHARE` / `NO KEY UPDATE` / `KEY SHARE` with `NOWAIT` / `SKIP LOCKED`.
+- Expressions: comparison, logical, `IN` / `NOT IN` (lists and subqueries), `LIKE` /
+  `ILIKE`, `BETWEEN`, `IS NULL`, `EXISTS`, arithmetic, function calls, scalar
+  subqueries, `raw` fragments.
+- `INSERT INTO t [AS alias] [(columns)]` with multi-row `VALUES` (rows as vectors or
+  as maps sharing one key set), `DEFAULT` in a value slot (`:default`), `INSERT ...
+  SELECT` (a statement map as `:values`), `ON CONFLICT` with column or expression
+  targets and an index predicate, `ON CONSTRAINT`, `DO NOTHING`, `DO UPDATE SET ...
+  [WHERE ...]` (`:excluded/col` names the proposed row), `RETURNING`.
+- `UPDATE t [AS alias] SET` from a map or a vector of `[column expression]` pairs,
+  `DEFAULT`, `FROM`, `WHERE`, `RETURNING`.
+- `DELETE FROM t [AS alias]` with `USING`, `WHERE`, `RETURNING`.
+- `TRUNCATE TABLE t, u` with `RESTART IDENTITY` / `CONTINUE IDENTITY` and `CASCADE` /
+  `RESTRICT`.
+- `WITH` before `INSERT`, `UPDATE` and `DELETE`.
+
+Not covered: `INTERSECT` / `EXCEPT`, `DEFAULT VALUES`, `OVERRIDING ... VALUE`,
+`ONLY`, the multi-column `SET (a, b) = (...)` forms, `WHERE CURRENT OF`, type casts,
+and identifier quoting (names outside `[a-z_][a-z0-9_$]*` go through `raw`).
 
 ## Limits and settings
 
@@ -78,7 +133,7 @@ library does not enforce, will be tabled here.
 ```
 src/sql_cljs/
   core.cljs         format engine, `format`, `raw`, `api-version`
-  helpers.cljs      builder functions producing plain composable data (to come)
+  helpers.cljs      builder functions, one per clause, producing plain composable data
   util.cljs         engine internals: the error constructor, the entity validator,
                     the raw fragment type, the inline literal renderer
 dev/sql_cljs/
@@ -95,6 +150,18 @@ test/sql_cljs/      mirrors src; run-tests.sh + test/publicity_gate.sh
   statement map in, `{:text "SELECT ..." :values [...]}` out.
 - `sql-cljs.core/raw`: `(raw "NOW()")`, a SQL fragment spliced verbatim.
 - `sql-cljs.core/api-version`: the version marker, `"0.1.0"`.
+- `sql-cljs.helpers`: one builder per clause, each returning `{clause value}` and
+  taking the statement being built as an optional first argument. Queries: `select`,
+  `distinct`, `distinct-on`, `from`, `join`, `inner-join`, `left-join`, `right-join`,
+  `full-join`, `cross-join`, `where`, `group-by`, `having`, `order-by`, `limit`,
+  `offset`, `union`, `union-all`, `with`, `with-recursive`, `for`. Data
+  modification: `insert-into`, `columns`, `values` (one argument, the vector of rows
+  or the source statement), `on-conflict` (the target columns), `on-constraint`,
+  `index-where`, `do-nothing`, `do-update-set` (one argument, the assignments),
+  `do-update-where`, `returning`, `update`, `set` (one argument, a map or a vector of
+  pairs), `delete-from`, `using`, `truncate`, `restart-identity`,
+  `continue-identity`, `cascade`, `restrict`. Refer to the namespace with an alias:
+  `for`, `set`, `update`, `group-by` and `distinct` shadow `cljs.core`.
 
 The full index follows the surface.
 
