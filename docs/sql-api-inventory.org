@@ -1,4 +1,4 @@
-#+TITLE: PostgreSQL SQL grammar inventory — sql-cljs phase 0
+#+TITLE: PostgreSQL SQL grammar inventory — sql-cljs
 #+DATE: 2026-10-15
 #+STARTUP: overview
 #+OPTIONS: toc:3
@@ -11,8 +11,8 @@ grammar of PostgreSQL, for the statements, clauses and operators of the sql-cljs
 of clauses, an expression is a vector, and =format= renders them to the
 ={:text "..." :values [...]}= map that =pg-cljs.core/query!= sends as is. The thing
 being wrapped is therefore not a package but a grammar, and the ground truth is the
-official PostgreSQL documentation. It is research only; implementation happens in
-later phases, and section 14 states the consequences each fact has for the sql-cljs
+official PostgreSQL documentation. It fixes contracts, not code; section 14 states
+the consequences each fact has for the sql-cljs
 design, section 15 every open question with its settle-later plan.
 
 *Product constraint that shapes everything below:* the finished library is pure
@@ -31,7 +31,7 @@ words, single spaces, no trailing semicolon. Tests pin exact output strings.
 HoneySQL 2.x (https://github.com/seancorfield/honeysql) is the DESIGN REFERENCE only
 (section 13): sql-cljs borrows its data shapes and conventions, not its code.
 
-** What sql-cljs WILL cover (the =0.1.0= scope, owner-approved, DDL included)
+** What sql-cljs WILL cover (the =0.1.0= scope, DDL included)
 - Queries: =SELECT= / =SELECT DISTINCT= / =DISTINCT ON=, =FROM= with aliases,
   =JOIN= (inner, left, right, full, cross) with =ON= and =USING=, =WHERE=,
   =GROUP BY=, =HAVING=, =ORDER BY= (=ASC= / =DESC=, =NULLS FIRST= / =NULLS LAST=),
@@ -55,7 +55,7 @@ HoneySQL 2.x (https://github.com/seancorfield/honeysql) is the DESIGN REFERENCE 
 - =WINDOW= / window functions, =GROUPING SETS= / =ROLLUP= / =CUBE=, =TABLESAMPLE=,
   =LATERAL=, =NATURAL= joins, =FETCH FIRST ... WITH TIES=, =ORDER BY ... USING
   operator=, =TABLE name=, =INTERSECT= / =EXCEPT= (precedence facts recorded in 2.12
-  so a later phase can add them without surprises), =FOR NO KEY UPDATE= / =FOR KEY
+  so they can be added later without surprises), =FOR NO KEY UPDATE= / =FOR KEY
   SHARE= (recorded in 2.11; decision in 15.9), =MATERIALIZED= / =NOT MATERIALIZED=
   CTEs, =SEARCH= / =CYCLE=, =MERGE=.
 - =INSERT ... DEFAULT VALUES=, =OVERRIDING ... VALUE=,
@@ -73,21 +73,19 @@ HoneySQL 2.x (https://github.com/seancorfield/honeysql) is the DESIGN REFERENCE 
   =U&"..."= Unicode escapes, dollar-quoted strings, bit strings, =::type= casts and
   =CAST(... AS ...)= (decision in 15.8), =COLLATE=.
 
-** Evidence tags
-Every fact carries one or more evidence tags:
-- =[SRC url]= — read from the official PostgreSQL documentation at
-  https://www.postgresql.org/docs/current/ on 2026-10-15. On that date =current=
-  resolved to PostgreSQL 18; the pages quoted are stable across the releases the
-  library targets (nothing in the =0.1.0= scope is newer than PostgreSQL 9.5, which
-  introduced =ON CONFLICT=). Quotations are the page's own words.
-- =[HSQL]= — the HoneySQL README at https://github.com/seancorfield/honeysql,
-  fetched on 2026-10-15 (section 13 only).
-- =[OFFLINE]= — would mark a claim verified against a locally reachable PostgreSQL
-  server with read-only catalog queries. NO SUCH TAG APPEARS IN THIS DOCUMENT: =psql=
-  is not installed on the authoring machine and no server was sought (no install, no
-  setup). Every claim that would have been checked live is listed in section 15 with
-  its settle-later plan.
-Anything not covered by these tags is in section 15 "Uncertainties".
+** Sources and reading conventions
+Every fact cites its source in parentheses:
+- =(https://www.postgresql.org/docs/current/...)= — read from the official PostgreSQL
+  documentation on 2026-10-15. On that date =current= resolved to PostgreSQL 18; the
+  pages quoted are stable across the releases the library targets (nothing in the
+  =0.1.0= scope is newer than PostgreSQL 9.5, which introduced =ON CONFLICT=).
+  Quotations are the page's own words.
+- =(HoneySQL README)= — https://github.com/seancorfield/honeysql, fetched on 2026-10-15
+  (section 13 only).
+- No claim is verified against a live PostgreSQL server: =psql= is not installed and no
+  server was sought (no install, no setup). Every claim that would have been checked
+  live is listed in section 15 with its settle-later plan.
+Anything not covered by these sources is in section 15 "Uncertainties".
 
 ** Reading conventions
 - Grammar is quoted in the documentation's synopsis notation: =[ ]= optional, ={ a |
@@ -118,7 +116,7 @@ Anything not covered by these tags is in section 15 "Uncertainties".
 | 15 | Uncertainties, with settle-later plans                        | complete | 15      |
 
 * 1. Lexical structure
-Page: =[SRC https://www.postgresql.org/docs/current/sql-syntax-lexical.html]= for
+Page: (https://www.postgresql.org/docs/current/sql-syntax-lexical.html) for
 everything in this section unless another tag is given.
 
 ** 1.1 Identifiers and key words
@@ -161,7 +159,7 @@ everything in this section unless another tag is given.
   | ="select"=  | =select=         | the only way to name a column or table called select |
   | ="my""q"=   | =my"q=           | doubled quote inside |
 
-** 1.3 Key-word categories =[SRC https://www.postgresql.org/docs/current/sql-keywords-appendix.html]=
+** 1.3 Key-word categories (https://www.postgresql.org/docs/current/sql-keywords-appendix.html)
 The appendix classifies every key word per SQL dialect. The PostgreSQL categories:
 - *reserved*: "not allowed as column or table names" unquoted (they may still be
   used as column labels, i.e. =SELECT 55 AS check= works).
@@ -247,7 +245,7 @@ word).
   and are 15.5.
 
 ** 1.6 Boolean constants and NULL
-=[SRC https://www.postgresql.org/docs/current/datatype-boolean.html]=
+(https://www.postgresql.org/docs/current/datatype-boolean.html)
 - "The key words =TRUE= and =FALSE= are the preferred (SQL-compliant) method for
   writing Boolean constants in SQL queries. But you can also use the string
   representations by following the generic string-literal constant syntax ... for
@@ -257,7 +255,7 @@ word).
   =n=. Leading or trailing whitespace is ignored, and case does not matter."
 - "The datatype output function for type =boolean= always emits either =t= or =f=."
 - =NULL= is a key word (reserved, 1.3), case-insensitive like every key word
-  =[SRC https://www.postgresql.org/docs/current/sql-syntax-lexical.html]=.
+  (https://www.postgresql.org/docs/current/sql-syntax-lexical.html).
 - *Adopted for inline mode:* booleans render as =TRUE= / =FALSE=, nil as =NULL=.
 
 ** 1.7 Operators and precedence
@@ -289,7 +287,7 @@ word).
   that relies on precedence is tied to a server version, one that parenthesizes is
   not. Decision in 14.3: sql-cljs parenthesizes every nested operator expression.
 
-** 1.8 Positional parameters =[SRC https://www.postgresql.org/docs/current/sql-expressions.html]=
+** 1.8 Positional parameters (https://www.postgresql.org/docs/current/sql-expressions.html)
 - "A positional parameter reference is used to indicate a value that is supplied
   externally to an SQL statement. Parameters are used in SQL function definitions and
   in prepared queries. The form of a parameter reference is: =$number="
@@ -306,7 +304,7 @@ word).
   (one occurrence, one =$N=, see 14.2).
 
 ** 1.9 Type casts (recorded, not emitted in =0.1.0=)
-=[SRC https://www.postgresql.org/docs/current/sql-expressions.html]= "PostgreSQL
+(https://www.postgresql.org/docs/current/sql-expressions.html) "PostgreSQL
 accepts two equivalent syntaxes for type casts: =CAST ( expression AS type )= and
 =expression::type=. The =CAST= syntax conforms to SQL; the syntax with =::= is
 historical PostgreSQL usage." "A cast applied to an unadorned string literal
@@ -315,7 +313,7 @@ will succeed for any type (if the contents of the string literal are acceptable 
 syntax for the data type)." Decision in 15.8.
 
 * 2. SELECT
-Page: =[SRC https://www.postgresql.org/docs/current/sql-select.html]= for everything
+Page: (https://www.postgresql.org/docs/current/sql-select.html) for everything
 in this section unless another tag is given.
 
 ** 2.1 Synopsis (the scope's lines, quoted from the page; omitted lines are marked)
@@ -406,7 +404,7 @@ formatter must emit (the processing order above is semantics, not syntax): =WITH
 - Example from the page: =SELECT name AS full_name, d.* FROM distributors d;=
 - A select list is optional in PostgreSQL (the synopsis shows it in =[ ]=; =SELECT
   FROM t= is legal and yields rows with no columns). sql-cljs treats an EMPTY
-  =:select= as a format error (owner ruling) rather than emit it.
+  =:select= as a format error rather than emit it.
 
 ** 2.4 DISTINCT and DISTINCT ON
 - "=SELECT DISTINCT= eliminates duplicate rows from the result." =SELECT ALL= is the
@@ -427,7 +425,7 @@ formatter must emit (the processing order above is semantics, not syntax): =WITH
   does not enforce it.
 
 ** 2.5 FROM, aliases, subqueries
-=[SRC https://www.postgresql.org/docs/current/queries-table-expressions.html]= and the
+(https://www.postgresql.org/docs/current/queries-table-expressions.html) and the
 =SELECT= page:
 - Alias syntax: =FROM table_reference AS alias= or =FROM table_reference alias=; "The
   =AS= key word is optional noise. /alias/ can be any identifier."
@@ -447,7 +445,7 @@ formatter must emit (the processing order above is semantics, not syntax): =WITH
 - =ONLY= before a table name and =*= after it control inheritance; out of scope.
 
 ** 2.6 JOIN
-=[SRC https://www.postgresql.org/docs/current/queries-table-expressions.html]=:
+(https://www.postgresql.org/docs/current/queries-table-expressions.html):
 #+begin_example
 T1 CROSS JOIN T2
 T1 { [INNER] | { LEFT | RIGHT | FULL } [OUTER] } JOIN T2 ON boolean_expression
@@ -494,7 +492,7 @@ T1 NATURAL { [INNER] | { LEFT | RIGHT | FULL } [OUTER] } JOIN T2
   renders =INNER JOIN=.
 
 ** 2.7 WHERE
-=[SRC https://www.postgresql.org/docs/current/queries-table-expressions.html]= "The
+(https://www.postgresql.org/docs/current/queries-table-expressions.html) "The
 syntax of the =WHERE= clause is =WHERE search_condition=, where /search_condition/ is
 any value expression (see Section 4.2) that returns a value of type =boolean=."
 "After the processing of the =FROM= clause is done, each row of the derived virtual
@@ -520,7 +518,7 @@ null) it is discarded."
   from within aggregate functions."
 
 ** 2.9 ORDER BY
-=[SRC https://www.postgresql.org/docs/current/queries-order.html]=:
+(https://www.postgresql.org/docs/current/queries-order.html):
 #+begin_example
 ORDER BY sort_expression1 [ASC | DESC] [NULLS { FIRST | LAST }]
          [, sort_expression2 [ASC | DESC] [NULLS { FIRST | LAST }] ...]
@@ -543,7 +541,7 @@ ORDER BY sort_expression1 [ASC | DESC] [NULLS { FIRST | LAST }]
 - =USING operator= (=SELECT= page) is out of scope.
 
 ** 2.10 LIMIT and OFFSET
-=[SRC https://www.postgresql.org/docs/current/queries-limit.html]=:
+(https://www.postgresql.org/docs/current/queries-limit.html):
 #+begin_example
 [ LIMIT { count | ALL } ]
 [ OFFSET start ]
@@ -565,7 +563,7 @@ ORDER BY sort_expression1 [ASC | DESC] [NULLS { FIRST | LAST }]
   the reverse; sql-cljs emits =LIMIT= then =OFFSET=).
 
 ** 2.11 The locking clause
-=[SRC https://www.postgresql.org/docs/current/sql-select.html]=:
+(https://www.postgresql.org/docs/current/sql-select.html):
 #+begin_example
 FOR lock_strength [ OF from_reference [, ...] ] [ NOWAIT | SKIP LOCKED ]
 lock_strength: UPDATE | NO KEY UPDATE | SHARE | KEY SHARE
@@ -592,7 +590,7 @@ lock_strength: UPDATE | NO KEY UPDATE | SHARE | KEY SHARE
   UPDATE= and =KEY SHARE= are 15.9.
 
 ** 2.12 UNION, INTERSECT, EXCEPT
-=[SRC https://www.postgresql.org/docs/current/queries-union.html]=:
+(https://www.postgresql.org/docs/current/queries-union.html):
 #+begin_example
 query1 UNION [ALL] query2
 query1 INTERSECT [ALL] query2
@@ -623,7 +621,7 @@ query1 EXCEPT [ALL] query2
   operands in 14.5.
 
 ** 2.13 WITH (common table expressions)
-=[SRC https://www.postgresql.org/docs/current/queries-with.html]=:
+(https://www.postgresql.org/docs/current/queries-with.html):
 - "=WITH= provides a way to write auxiliary statements for use in a larger query.
   These statements, which are often referred to as Common Table Expressions or CTEs,
   can be thought of as defining temporary tables that exist just for one query."
@@ -672,7 +670,7 @@ query1 EXCEPT [ALL] query2
 
 * 3. Expressions and operators
 
-** 3.1 Value-expression kinds =[SRC https://www.postgresql.org/docs/current/sql-expressions.html]=
+** 3.1 Value-expression kinds (https://www.postgresql.org/docs/current/sql-expressions.html)
 "A value expression is one of the following: A constant or literal value; A column
 reference; A positional parameter reference, in the body of a function definition or
 prepared statement; A subscripted expression; A field selection expression; An
@@ -686,7 +684,7 @@ subqueries (as the right-hand side of =IN= / =EXISTS= and as a select-list or
 comparison operand), parenthesized expressions.
 
 ** 3.2 Column references
-=[SRC https://www.postgresql.org/docs/current/sql-expressions.html]= "A column can be
+(https://www.postgresql.org/docs/current/sql-expressions.html) "A column can be
 referenced in the form: /correlation/./columnname/. /correlation/ is the name of a
 table (possibly qualified with a schema name), or an alias for a table defined by
 means of a =FROM= clause. The correlation name and separating dot can be omitted if
@@ -695,7 +693,7 @@ the column name is unique across all the tables being used in the current query.
 qualification is the same dotted form one level up.
 
 ** 3.3 Operator invocations and function calls
-=[SRC https://www.postgresql.org/docs/current/sql-expressions.html]=
+(https://www.postgresql.org/docs/current/sql-expressions.html)
 - "There are two possible syntaxes for an operator invocation: /expression operator
   expression/ (binary infix operator); /operator expression/ (unary prefix
   operator)".
@@ -706,7 +704,7 @@ qualification is the same dotted form one level up.
   built-in functions are lower-case names. Decision on the case of emitted function
   names in 14.6.
 
-** 3.4 Comparison operators =[SRC https://www.postgresql.org/docs/current/functions-comparison.html]=
+** 3.4 Comparison operators (https://www.postgresql.org/docs/current/functions-comparison.html)
 | Operator | Description |
 |----------+-------------|
 | =<=      | Less than |
@@ -725,7 +723,7 @@ when either input is null. For example, =7 = NULL= yields null, as does =7 <> NU
 scope; recorded because callers who pass =nil= to =:== get =a = $1= with a null
 parameter, which is never true, see 14.7).
 
-** 3.5 Logical operators =[SRC https://www.postgresql.org/docs/current/functions-logical.html]=
+** 3.5 Logical operators (https://www.postgresql.org/docs/current/functions-logical.html)
 "The usual logical operators are available: =boolean AND boolean → boolean=,
 =boolean OR boolean → boolean=, =NOT boolean → boolean=. SQL uses a three-valued
 logic system with true, false, and =null=, which represents 'unknown'."
@@ -743,7 +741,7 @@ right operands without affecting the result. (However, it is not guaranteed that
 left operand is evaluated before the right operand.)" Precedence: =NOT= above =AND=
 above =OR= (1.7); =NOT= is a prefix operator.
 
-** 3.6 LIKE and ILIKE =[SRC https://www.postgresql.org/docs/current/functions-matching.html]=
+** 3.6 LIKE and ILIKE (https://www.postgresql.org/docs/current/functions-matching.html)
 #+begin_example
 string LIKE pattern [ESCAPE escape-character]
 string NOT LIKE pattern [ESCAPE escape-character]
@@ -769,7 +767,7 @@ string NOT LIKE pattern [ESCAPE escape-character]
 - =ESCAPE= is out of scope; =NOT LIKE= / =NOT ILIKE= are in scope as the negations.
 
 ** 3.7 IN and NOT IN
-Value-list form =[SRC https://www.postgresql.org/docs/current/functions-comparisons.html]=:
+Value-list form (https://www.postgresql.org/docs/current/functions-comparisons.html):
 - "/expression/ IN (/value/ [, ...]) — The right-hand side is a parenthesized list
   of expressions. The result is 'true' if the left-hand expression's result is equal
   to any of the right-hand expressions. This is a shorthand notation for /expression/
@@ -784,7 +782,7 @@ Value-list form =[SRC https://www.postgresql.org/docs/current/functions-comparis
   true as one might naively expect."
 - "=x NOT IN y= is equivalent to =NOT (x IN y)= in all cases."
 - The page does not mention an empty list =IN ()=; it is 15.7.
-Subquery form =[SRC https://www.postgresql.org/docs/current/functions-subquery.html]=:
+Subquery form (https://www.postgresql.org/docs/current/functions-subquery.html):
 - "/expression/ IN (/subquery/) — The right-hand side is a parenthesized subquery,
   which must return exactly one column." "The result of =IN= is 'true' if any equal
   subquery row is found. The result is 'false' if no equal row is found (including
@@ -796,7 +794,7 @@ Subquery form =[SRC https://www.postgresql.org/docs/current/functions-subquery.h
 Both forms are the same syntax to a formatter: =expr IN ( ... )= where the
 parenthesized part is either a comma list of values or a =SELECT=.
 
-** 3.8 BETWEEN =[SRC https://www.postgresql.org/docs/current/functions-comparison.html]=
+** 3.8 BETWEEN (https://www.postgresql.org/docs/current/functions-comparison.html)
 - "/a/ BETWEEN /x/ AND /y/ is equivalent to /a/ >= /x/ AND /a/ <= /y/. Notice that
   =BETWEEN= treats the endpoint values as included in the range."
 - =NOT BETWEEN=: "Not between (the negation of =BETWEEN=)"; =2 NOT BETWEEN 1 AND 3=
@@ -809,7 +807,7 @@ parenthesized part is either a comma list of values or a =SELECT=.
   sub-expression." Consequence in 14.3: endpoints that are themselves operator
   expressions are parenthesized.
 
-** 3.9 IS NULL and IS NOT NULL =[SRC https://www.postgresql.org/docs/current/functions-comparison.html]=
+** 3.9 IS NULL and IS NOT NULL (https://www.postgresql.org/docs/current/functions-comparison.html)
 - "/expression/ IS NULL", "/expression/ IS NOT NULL", "or the equivalent, but
   nonstandard, predicates: /expression/ ISNULL, /expression/ NOTNULL".
 - "Do /not/ write /expression/ = NULL because =NULL= is not 'equal to' =NULL=. (The
@@ -824,7 +822,7 @@ parenthesized part is either a comma list of values or a =SELECT=.
   UNKNOWN= "will always return true or false, never a null value, even when the
   operand is null"; out of scope.
 
-** 3.10 EXISTS =[SRC https://www.postgresql.org/docs/current/functions-subquery.html]=
+** 3.10 EXISTS (https://www.postgresql.org/docs/current/functions-subquery.html)
 - "EXISTS (/subquery/) — The argument of =EXISTS= is an arbitrary =SELECT= statement,
   or /subquery/. The subquery is evaluated to determine whether it returns any rows.
   If it returns at least one row, the result of =EXISTS= is 'true'; if the subquery
@@ -836,7 +834,7 @@ parenthesized part is either a comma list of values or a =SELECT=.
 - Example: =SELECT col1 FROM tab1 WHERE EXISTS (SELECT 1 FROM tab2 WHERE col2 =
   tab1.col2);=. =NOT EXISTS= is =NOT= applied to the predicate.
 
-** 3.11 Arithmetic =[SRC https://www.postgresql.org/docs/current/functions-math.html]=
+** 3.11 Arithmetic (https://www.postgresql.org/docs/current/functions-math.html)
 | Operator | Description | Example |
 |----------+-------------+---------|
 | =+=      | Addition | =2 + 3= → =5= |
@@ -855,7 +853,7 @@ concatenation =||= is not on this page (it is a string operator) and is out of
 scope.
 
 ** 3.12 Aggregate expressions
-=[SRC https://www.postgresql.org/docs/current/sql-expressions.html]= "The syntax of an
+(https://www.postgresql.org/docs/current/sql-expressions.html) "The syntax of an
 aggregate expression is one of the following:"
 #+begin_example
 aggregate_name (expression [ , ... ] [ order_by_clause ] ) [ FILTER ( WHERE filter_clause ) ]
@@ -870,7 +868,7 @@ function." "For example, =count(*)= yields the total number of input rows;
 =count(f1)= yields the number of input rows in which =f1= is non-null, since =count=
 ignores nulls; and =count(distinct f1)= yields the number of distinct non-null values
 of =f1=."
-=[SRC https://www.postgresql.org/docs/current/functions-aggregate.html]= Table 9.62:
+(https://www.postgresql.org/docs/current/functions-aggregate.html) Table 9.62:
 =count ( * ) → bigint= "Computes the number of input rows."; =count ( "any" ) →
 bigint= "Computes the number of input rows in which the input value is not null.";
 =sum= "Computes the sum of the non-null input values."; =avg= "Computes the average
@@ -882,7 +880,7 @@ Scope: the first and fourth forms (=name(args)= and =name(*)=); =DISTINCT= insid
 aggregate, =ORDER BY=, =FILTER= and =WITHIN GROUP= are out of scope.
 
 ** 3.13 Scalar subqueries
-=[SRC https://www.postgresql.org/docs/current/sql-expressions.html]= "A scalar subquery
+(https://www.postgresql.org/docs/current/sql-expressions.html) "A scalar subquery
 is an ordinary =SELECT= query in parentheses that returns exactly one row with one
 column. ... It is an error to use a query that returns more than one row or more
 than one column as a scalar subquery. (But if, during a particular execution, the
@@ -892,7 +890,7 @@ states.name) FROM states;=. A nested statement map anywhere an expression is
 expected renders as a parenthesized =SELECT= (14.8).
 
 ** 3.14 Evaluation rules
-=[SRC https://www.postgresql.org/docs/current/sql-expressions.html]= "The order of
+(https://www.postgresql.org/docs/current/sql-expressions.html) "The order of
 evaluation of subexpressions is not defined. In particular, the inputs of an operator
 or function are not necessarily evaluated left-to-right or in any other fixed order."
 "Boolean expressions (=AND=/=OR=/=NOT= combinations) in those clauses can be
@@ -900,7 +898,7 @@ reorganized in any manner allowed by the laws of Boolean algebra." Recorded so t
 manual can say that sql-cljs preserves the caller's textual order and nothing more.
 
 * 4. INSERT
-Page: =[SRC https://www.postgresql.org/docs/current/sql-insert.html]=.
+Page: (https://www.postgresql.org/docs/current/sql-insert.html).
 
 ** 4.1 Synopsis (verbatim)
 #+begin_example
@@ -975,8 +973,8 @@ Note the alias: =INSERT INTO table_name AS alias= — =AS= is NOT optional here,
 - "It is often preferable to use unique index inference rather than naming a
   constraint directly using =ON CONFLICT ON CONSTRAINT= /constraint_name/."
   =ON CONFLICT ON CONSTRAINT= IS in scope for sql-cljs: the =:on-constraint= key of
-  =:on-conflict= (implemented in Phase 2, kept by decision 109BA8DB on 2026-10-15,
-  which reversed the "out of scope" line this one replaces). The documentation's
+  =:on-conflict= (implemented; the decision of 2026-10-15 reversed the "out of scope"
+  line this one replaces). The documentation's
   sentence is a preference note, not a limitation: both arbiter forms are exposed
   and the caller picks, the library chooses nothing; the manual repeats the
   preference as guidance. "In all cases, only =NOT DEFERRABLE= constraints and unique
@@ -1023,7 +1021,7 @@ Note the alias: =INSERT INTO table_name AS alias= — =AS= is NOT optional here,
   the affected rows (pg-cljs yields them as =:rows=).
 
 * 5. UPDATE
-Page: =[SRC https://www.postgresql.org/docs/current/sql-update.html]=.
+Page: (https://www.postgresql.org/docs/current/sql-update.html).
 
 ** 5.1 Synopsis (verbatim)
 #+begin_example
@@ -1076,7 +1074,7 @@ UPDATE [ ONLY ] table_name [ * ] [ [ AS ] alias ]
 - Textual order: =UPDATE= target, =SET=, =FROM=, =WHERE=, =RETURNING=.
 
 * 6. DELETE
-Page: =[SRC https://www.postgresql.org/docs/current/sql-delete.html]=.
+Page: (https://www.postgresql.org/docs/current/sql-delete.html).
 
 ** 6.1 Synopsis (verbatim)
 #+begin_example
@@ -1115,7 +1113,7 @@ DELETE FROM [ ONLY ] table_name [ * ] [ [ AS ] alias ]
 - Textual order: =DELETE FROM= target, =USING=, =WHERE=, =RETURNING=.
 
 * 7. TRUNCATE
-Page: =[SRC https://www.postgresql.org/docs/current/sql-truncate.html]=.
+Page: (https://www.postgresql.org/docs/current/sql-truncate.html).
 #+begin_example
 TRUNCATE [ TABLE ] [ ONLY ] name [ * ] [, ... ]
     [ RESTART IDENTITY | CONTINUE IDENTITY ] [ CASCADE | RESTRICT ]
@@ -1145,7 +1143,7 @@ TRUNCATE [ TABLE ] [ ONLY ] name [ * ] [, ... ]
   =ONLY= and =*= out of scope.
 
 * 8. CREATE TABLE
-Page: =[SRC https://www.postgresql.org/docs/current/sql-createtable.html]=.
+Page: (https://www.postgresql.org/docs/current/sql-createtable.html).
 
 ** 8.1 Synopsis (first form; lines out of scope marked)
 #+begin_example
@@ -1210,7 +1208,7 @@ are comma-separated inside one pair of parentheses.
   (=:text=, =:double-precision= for the multi-word types, the =-= becoming a space),
   a VECTOR =[keyword & numbers]= for the parameterized types (=[:varchar 40]=) and a
   =raw= fragment for the rest (array types, =interval hour to minute=); a string is
-  a value, never a type (14.11, 15.18; Phase 3 pinned the spellings).
+  a value, never a type (14.11, 15.18; the spellings are pinned by tests).
 - =DEFAULT default_expr=: "The value is any variable-free expression (in particular,
   cross-references to other columns in the current table are not allowed).
   Subqueries are not allowed either. The data type of the default expression must
@@ -1280,7 +1278,7 @@ are comma-separated inside one pair of parentheses.
   #+end_example
 
 * 9. DROP TABLE
-Page: =[SRC https://www.postgresql.org/docs/current/sql-droptable.html]=.
+Page: (https://www.postgresql.org/docs/current/sql-droptable.html).
 #+begin_example
 DROP TABLE [ IF EXISTS ] name [, ...] [ CASCADE | RESTRICT ]
 #+end_example
@@ -1297,7 +1295,7 @@ DROP TABLE [ IF EXISTS ] name [, ...] [ CASCADE | RESTRICT ]
 - Example: =DROP TABLE films, distributors;= (several names, comma-separated).
 
 * 10. ALTER TABLE
-Page: =[SRC https://www.postgresql.org/docs/current/sql-altertable.html]=.
+Page: (https://www.postgresql.org/docs/current/sql-altertable.html).
 #+begin_example
 ALTER TABLE [ IF EXISTS ] [ ONLY ] name [ * ]
     action [, ... ]
@@ -1344,7 +1342,7 @@ where action is one of (scope lines only):
   RENAME COLUMN address TO city;=, =ALTER TABLE distributors RENAME TO suppliers;=.
 
 * 11. CREATE INDEX and DROP INDEX
-** 11.1 CREATE INDEX =[SRC https://www.postgresql.org/docs/current/sql-createindex.html]=
+** 11.1 CREATE INDEX (https://www.postgresql.org/docs/current/sql-createindex.html)
 #+begin_example
 CREATE [ UNIQUE ] INDEX [ CONCURRENTLY ] [ [ IF NOT EXISTS ] name ] ON [ ONLY ] table_name [ USING method ]
     ( { column_name | ( expression ) } [ COLLATE collation ] [ opclass [ ( opclass_parameter = value [, ... ] ) ] ] [ ASC | DESC ] [ NULLS { FIRST | LAST } ] [, ...] )
@@ -1398,10 +1396,9 @@ CREATE [ UNIQUE ] INDEX [ CONCURRENTLY ] [ [ IF NOT EXISTS ] name ] ON [ ONLY ] 
   columns (a function call is emitted bare, =LOWER(title)=, any other operator
   expression parenthesized, =(a + b)=, both as the page allows), =WHERE= partial
   predicate. =INCLUDE=, =COLLATE=, =opclass=, =NULLS DISTINCT=, =WITH=, =TABLESPACE=
-  are out of scope. Phase 3 corrected this line: expression columns and per-column
-  order were first listed as out of scope and are in.
+  are out of scope; expression columns and per-column order are in.
 
-** 11.2 DROP INDEX =[SRC https://www.postgresql.org/docs/current/sql-dropindex.html]=
+** 11.2 DROP INDEX (https://www.postgresql.org/docs/current/sql-dropindex.html)
 #+begin_example
 DROP INDEX [ CONCURRENTLY ] [ IF EXISTS ] name [, ...] [ CASCADE | RESTRICT ]
 #+end_example
@@ -1422,7 +1419,7 @@ DROP INDEX [ CONCURRENTLY ] [ IF EXISTS ] name [, ...] [ CASCADE | RESTRICT ]
 - Textual order: =CONCURRENTLY= before =IF EXISTS=.
 
 * 12. CREATE VIEW and DROP VIEW
-** 12.1 CREATE VIEW =[SRC https://www.postgresql.org/docs/current/sql-createview.html]=
+** 12.1 CREATE VIEW (https://www.postgresql.org/docs/current/sql-createview.html)
 #+begin_example
 CREATE [ OR REPLACE ] [ TEMP | TEMPORARY ] [ RECURSIVE ] VIEW name [ ( column_name [, ...] ) ]
     [ WITH ( view_option_name [= view_option_value] [, ... ] ) ]
@@ -1453,7 +1450,7 @@ CREATE [ OR REPLACE ] [ TEMP | TEMPORARY ] [ RECURSIVE ] VIEW name [ ( column_na
   15.11. The view's =query= is a nested statement map, rendered WITHOUT surrounding
   parentheses (the synopsis shows =AS query=, not =AS ( query )=).
 
-** 12.2 DROP VIEW =[SRC https://www.postgresql.org/docs/current/sql-dropview.html]=
+** 12.2 DROP VIEW (https://www.postgresql.org/docs/current/sql-dropview.html)
 #+begin_example
 DROP VIEW [ IF EXISTS ] name [, ...] [ CASCADE | RESTRICT ]
 #+end_example
@@ -1464,7 +1461,7 @@ DROP VIEW [ IF EXISTS ] name [, ...] [ CASCADE | RESTRICT ]
   to drop the view if any objects depend on it. This is the default."
 - Example: =DROP VIEW kinds;=
 
-* 13. HoneySQL 2.x design reference =[HSQL]=
+* 13. HoneySQL 2.x design reference (HoneySQL README)
 HoneySQL (https://github.com/seancorfield/honeysql) is the reference for the DATA
 SHAPES sql-cljs adopts; nothing of its code is used. The README's own words, fetched
 on 2026-10-15:
@@ -1491,7 +1488,7 @@ on 2026-10-15:
   parameters".
 - "Namespace-qualified keywords (and symbols) are generally treated as
   table-qualified columns: =:foo/bar= becomes =foo.bar=".
-- *Adopted verbatim* (owner ruling): keywords/symbols are entities, strings are
+- *Adopted verbatim*: keywords/symbols are entities, strings are
   values, =:foo/bar= → =foo.bar=; =:foo.bar= (a dot inside the name) also renders
   =foo.bar= (14.1).
 
@@ -1559,15 +1556,15 @@ on 2026-10-15:
 - Named parameters (="Keywords that begin with =?= are interpreted as bindable
   parameters"=, =[:param :name]= with =:params=): not adopted; a value is a value.
 - =:dialect=: PostgreSQL only.
-- Doc pages the README links, for later phases to consult on shapes: clause
+- Doc pages the README links, to consult on shapes: clause
   reference https://github.com/seancorfield/honeysql/blob/develop/doc/clause-reference.md,
   operator reference https://github.com/seancorfield/honeysql/blob/develop/doc/operator-reference.md,
   special syntax https://github.com/seancorfield/honeysql/blob/develop/doc/special-syntax.md.
 
 * 14. Consequences for the sql-cljs design
 Each grammar fact above, mapped to what the formatter must do. Items marked
-"decision" are proposals for Phase 1-3 that the owner rulings do not already fix;
-where a decision is open it points at section 15.
+"decision" are design proposals the scope statement does not already fix; where a
+decision is open it points at section 15.
 
 ** 14.1 Entities (1.1, 1.2, 3.2, 13.2)
 - A keyword or symbol is an entity. =:foo/bar= renders =foo.bar=; =:foo.bar= renders
@@ -1622,11 +1619,11 @@ where a decision is open it points at section 15.
   then never relied on (it changed in 9.5), =BETWEEN='s =AND= ambiguity (3.8) and the
   =^= associativity trap (3.11) cannot bite, and the output is deterministic. Top
   level of a clause is not parenthesized (=WHERE a = $1=). HoneySQL's own output
-  parenthesizes the same way (13.3). Exact strings pinned in Phase 1 tests.
+  parenthesizes the same way (13.3). Exact strings pinned by tests.
 - Unknown operator keyword in a predicate position → function-call syntax (13.3,
   14.6), never an error: =[:coalesce :a 0]= is =COALESCE(a, $1)=. An unknown
-  OPERATOR-SHAPED keyword (=:<=>=, =:!=) is a format error with =:op= (owner ruling:
-  "unknown operator" is a format error) — the rule: a keyword whose name contains no
+  OPERATOR-SHAPED keyword (=:<=>=, =:!=) is a format error with =:op= ("unknown
+  operator" is a format error) — the rule: a keyword whose name contains no
   letter is an operator and must be in the table.
 - =:not== is spelled =<>= (the parser converts =!== to =<>= anyway, 3.4).
 
@@ -1635,7 +1632,7 @@ where a decision is open it points at section 15.
   =SELECT [DISTINCT | DISTINCT ON (...)]=, =FROM=, =JOIN=s (in the caller's
   order, immediately after =FROM=), =WHERE=, =GROUP BY=, =HAVING=, =UNION= / =UNION
   ALL=, =ORDER BY=, =LIMIT=, =OFFSET=, =FOR ...=. Map key order is irrelevant.
-- =:select= empty vector → format error (2.3, owner ruling). =:select :*= and
+- =:select= empty vector → format error (2.3). =:select :*= and
   =:select [:*]= both render =SELECT *=.
 - Aliases: =[expr alias]= pairs in =:select= and =:from= render =expr AS alias=
   always with =AS= (2.3: =AS= avoids every key-word ambiguity; 2.5: optional noise in
@@ -1669,19 +1666,19 @@ where a decision is open it points at section 15.
 2.12: an operand with =ORDER BY= / =LIMIT= / locking must be parenthesized or the
 clause applies to the whole. Decision: sql-cljs parenthesizes EVERY operand of
 =:union= / =:union-all= (=(SELECT ...) UNION (SELECT ...)=), which is always legal
-and never changes meaning; exact strings pinned in Phase 1. (HoneySQL does not
+and never changes meaning; exact strings pinned by tests. (HoneySQL does not
 parenthesize; the deviation is deliberate and documented in the manual.)
 
 ** 14.6 Function calls and aggregates (3.3, 3.12)
 - =[:count :*]= → =COUNT(*)=; =[:count :a]= → =COUNT(a)=; =[:max :a]= → =MAX(a)=;
   =[:now]= → =NOW()=; =[:coalesce :a "x"]= → =COALESCE(a, $1)=.
-- Function names are emitted UPPER-CASE (the owner ruling "upper-case SQL keywords"
+- Function names are emitted UPPER-CASE (the "upper-case SQL key words" rule
   extended to functions, as HoneySQL does): PostgreSQL folds unquoted names (1.1), so
   =COUNT= and =count= are the same function. A user-defined function with a
   mixed-case name created quoted cannot be called this way until 15.1 is settled.
   Decision.
 - =DISTINCT= inside an aggregate, =FILTER=, =ORDER BY= inside an aggregate: out of
-  scope; =[:count-distinct :a]= is a candidate convenience for a later phase.
+  scope; =[:count-distinct :a]= is a candidate convenience for later.
 
 ** 14.7 Nulls (3.4, 3.5, 3.7, 3.9)
 The manual's gotcha section records, from the documentation: == NULL= is never true
@@ -1698,7 +1695,7 @@ either). Parameter numbering continues across the nesting (14.2).
 - =:insert-into :t= + =:columns [:a :b]= + =:values [[1 "x"] [2 "y"]]= → =INSERT
   INTO t (a, b) VALUES ($1, $2), ($3, $4)=. =:values= may also be a vector of maps
   (HoneySQL style): the column list is the union of keys in first-seen order and a
-  missing key renders =DEFAULT= (4.2) — decision for Phase 2, 15.16.
+  missing key renders =DEFAULT= (4.2) — decision 15.16.
 - =:values= given a statement map → =INSERT INTO t (a, b) SELECT ...= (4.2).
 - Alias: =:insert-into [:t :d]= → =INSERT INTO t AS d= (=AS= mandatory, 4.1).
 - =:on-conflict [:a :b]= → =ON CONFLICT (a, b)=; =:on-conflict [[:a] [:= :c 1]]= or a
@@ -1707,7 +1704,7 @@ either). Parameter numbering continues across the nesting (14.2).
   what it is given; the server rejects =DO UPDATE= without a target).
 - =:do-nothing true= → =DO NOTHING=; =:do-update-set {:a :excluded/a}= → =DO UPDATE
   SET a = excluded.a=; =:do-update-set {:cols {...} :where [...]}= or a sibling
-  =:do-update-where= clause → =... WHERE ...= (4.3; shape to settle in Phase 2,
+  =:do-update-where= clause → =... WHERE ...= (4.3; shape settled in
   15.16). Column names in =SET= are never table-qualified (4.2).
 - =:returning [:id]= → =RETURNING id=; =:returning [:*]= → =RETURNING *= (4.4).
 
@@ -1724,7 +1721,7 @@ either). Parameter numbering continues across the nesting (14.2).
   CASCADE= (7). Decision: emit the optional =TABLE= word (the SQL-standard spelling).
 
 ** 14.11 CREATE TABLE (8)
-- The shape Phase 3 pinned: =:create-table :t= + =:if-not-exists true= + =:columns=,
+- The pinned shape: =:create-table :t= + =:if-not-exists true= + =:columns=,
   a vector of column definitions =[name type & constraints]=, + =:constraints=, a
   vector of table constraints: ={:create-table :t :if-not-exists true :columns [[:id
   :serial :primary-key] [:name [:varchar 40] :not-null] [:did :integer [:references
@@ -1765,19 +1762,19 @@ either). Parameter numbering continues across the nesting (14.2).
 - =:alter-table :t= + =:if-exists true= + =:actions=, a vector of action vectors
   =[:add-column [name type & constraints] :if-not-exists]=, =[:drop-column :c
   :if-exists :cascade|:restrict]=, =[:rename-column :old :new]= → =ALTER TABLE t ADD
-  COLUMN ..., DROP COLUMN ...= / =RENAME COLUMN old TO new= (10). Phase 3 pinned:
+  COLUMN ..., DROP COLUMN ...= / =RENAME COLUMN old TO new= (10). Pinned:
   the optional =COLUMN= word is emitted; several =ADD= / =DROP= actions are
   comma-separated in the order written (the page allows combining); =RENAME COLUMN=
-  alone in its statement (a format error next to another action). The sketch "one
-  action per statement" of Phase 0 is superseded.
+  alone in its statement (a format error next to another action). The earlier sketch
+  "one action per statement" is superseded.
 - =:create-index :name= (=nil= for the unnamed form) + =:unique true= +
   =:concurrently true= + =:if-not-exists true= + =:on :t= + =:using :gin= +
   =:columns [:a [:b :desc :nulls-last] [[:lower :c]]]= + =:where [...]= → =CREATE
   UNIQUE INDEX CONCURRENTLY IF NOT EXISTS name ON t USING gin (a, b DESC NULLS LAST,
   LOWER(c)) WHERE ...= (11.1; =USING= between the table and the column list; method
   name lower-case as the documentation spells it, it is an identifier; =IF NOT
-  EXISTS= without a name is a format error, the page requires the name). The sketch
-  =:on [:t :a :b]= of Phase 0 is superseded by =:on :t= + =:columns=.
+  EXISTS= without a name is a format error, the page requires the name). The earlier
+  sketch =:on [:t :a :b]= is superseded by =:on :t= + =:columns=.
   =:drop-index :name= (or a vector of names) + =:concurrently= + =:if-exists= +
   =:cascade= / =:restrict= → =DROP INDEX CONCURRENTLY IF EXISTS name CASCADE= (11.2;
   =CONCURRENTLY= with =:cascade= or with several names is a format error, 15.10).
@@ -1817,28 +1814,28 @@ literal spelling, a statement map with no statement key.
 ** 14.15 Output text
 Upper-case key words, exactly one space between tokens, =, = between list items,
 no space inside parentheses (=COUNT(*)=, =(a, b)=), no trailing semicolon, no
-newlines. Every Phase 1-3 test pins the exact string.
+newlines. Every test pins the exact string.
 
 * 15. Uncertainties (settle-later plans)
 | # | Uncertainty | Plan |
 |---+-------------+------|
-| 15.1 | *Identifier quoting strategy.* PostgreSQL folds unquoted identifiers to lower case and only quoted identifiers preserve case (1.1, 1.2); reserved key words (=user=, =order=, =group=, =check=, =end=, ...) cannot be used unquoted as table or column names (1.3). The DSL currently has NO quoting rule: =:user= renders =user= and fails server-side; =:MyCol= renders =MyCol= and names =mycol=. HoneySQL's default is unquoted with an opt-in =:quoted true= (13.8). Options: (a) never quote (status quo, simplest, matches HoneySQL's default; the caller writes =(raw "\"user\"")=); (b) opt-in ={:quoted true}= that double-quotes every entity segment, doubling embedded quotes (1.2) — =:foo/bar= → ="foo"."bar"=, =:*= stays bare; (c) always quote. (c) changes every expected string and breaks the "foo.a" examples of the ruling; (b) is additive. | DECISION NEEDED from the orchestrator before Phase 1 pins strings. Recommendation: (a) for Phase 1 with the entity renderer isolated in one function (14.1), (b) added as an option in Phase 2 with its own exact-string tests; the manual documents the reserved-word list link and the fold rule either way. |
-| 15.2 | *Two-element vectors in =:select=.* HoneySQL: a vector at the top level of =:select= is always =[expr alias]= (="(select [:a :b]) means SELECT a AS b rather than SELECT a, b"=), and a function call with an alias is =[[:count :*] :total]= (13.4). The ambiguity: is =[:count :*]= at the top level of =:select= an alias pair ("count AS *") or a call? Under the HoneySQL rule it is an alias pair and renders nonsense. The owner ruling says "function calls in select ([:count :*] style)", which reads as the bare form. | DECISION NEEDED. Recommendation: adopt the HoneySQL rule verbatim (top-level vector in =:select= / =:from= / =:returning= = alias pair; functions nest: =[[:count :*] :n]= or =[[:count :*]]=), because it is unambiguous and documented upstream, AND make the alias position strict: the second element of a pair MUST be a keyword/symbol, so =[:count :*]= with =:*= as "alias" is rejected as a format error with a message naming the nested form — turning the likely mistake into a loud failure. Pinned by Phase 1 tests either way. |
-| 15.3 | Whether a =$N= parameter is legal inside DDL (=CREATE TABLE ... DEFAULT $1=, =CREATE INDEX ... WHERE a = $1=). The documentation says =DEFAULT= takes a "variable-free expression" (8.2) and positional parameters belong to prepared statements and function bodies (1.8); utility statements are not parameterizable in the extended protocol as far as the documentation goes, but it does not say so on these pages. | RESOLVED IN DOCUMENTATION (Phase 3): sql-cljs inlines all DDL literals (14.2) in both modes, so the question never reaches the server; the test =create-table-column-constraints= pins =DEFAULT 'x'= and =:values []= in parameter mode, and the view body and the partial-index predicate are inlined the same way. There is NO smoke build in this repository by design (the library is pure formatting with no live surface); the live check of DDL behavior is the owner's hand-run composition of pg-cljs with sql-cljs, not an automated step here. |
-| 15.4 | Inline mode on a server with =standard_conforming_strings = off=: backslashes in inlined strings would be interpreted as escapes (1.4, 3.6). Default has been =on= since 9.1. | Documented in the README's inline caution; no code path. A later phase may double backslashes behind an option if a user asks. |
-| 15.5 | Inline rendering of JavaScript =NaN= / =Infinity= / =-0= numbers (1.5: not numeric constants). | Phase 1: =NaN= and =±Infinity= in inline mode are a format error (=:op :inline=); =-0= renders =0=. Parameter mode passes them through untouched (pg-cljs's concern). Exact-string tests. |
-| 15.6 | Type resolution of an untyped parameter where context gives none (=SELECT $1=, =LIMIT $1= with a string value). The documentation does not state the rule on the pages read. | RESOLVED IN DOCUMENTATION (Phase 3): =LIMIT= / =OFFSET= stay parameterized per 14.4 and the Phase 1-2 tests pin the text. There is NO smoke build in this repository by design (pure formatting, no live surface); the live =EXPLAIN SELECT ... LIMIT $1= check of parameter typing is the owner's hand-run composition of pg-cljs with sql-cljs. If it fails live, =LIMIT= / =OFFSET= numbers become inline integers (a one-line change). |
-| 15.7 | =IN ()= with an empty list: not mentioned by the documentation (3.7); believed to be a syntax error. | Phase 1: =[:in :a []]= is a format error (=:op :in=, message suggesting =FALSE= or a non-empty list), never emitted. Decision; owner can overrule to render =FALSE= / =TRUE=. |
-| 15.8 | Type casts (=::type=, =CAST=) are out of the ruling's scope but almost every real query needs one (=$1::uuid=, =$1::jsonb=). | Not in =0.1.0=. Recorded for the owner as the first post-0.1.0 candidate; =(raw "$1::uuid")= cannot work because =$N= numbering is the formatter's. |
-| 15.9 | =FOR NO KEY UPDATE= / =FOR KEY SHARE= (2.11): in the grammar, not in the ruling's scope list. | Phase 1: accept =:no-key-update= / =:key-share= strengths alongside =:update= / =:share= (zero extra code paths, same clause shape) and document them; owner can strike them. |
-| 15.10 | =CONCURRENTLY= on =CREATE INDEX= / =DROP INDEX= (11): cannot run inside a transaction block, and =DROP INDEX CONCURRENTLY= forbids =CASCADE= and multiple names. The ruling says "document; decide scope". | IMPLEMENTED (Phase 3): =:concurrently true= on both, rendered =CREATE INDEX CONCURRENTLY= / =DROP INDEX CONCURRENTLY=; on =DROP INDEX= a format error (=:op :drop-index=) when combined with =:cascade= or with several names (=:restrict= is accepted, it is the default behavior); tests =create-index=, =drop-index=, =drop-errors=. The manual (Phase 4) states the transaction-block restriction. Owner can strike it. |
-| 15.11 | =CREATE OR REPLACE VIEW= (12.1): not in the ruling's scope list. | IMPLEMENTED (Phase 3): =:or-replace true= renders =CREATE OR REPLACE VIEW= (test =create-view=); owner can strike it. |
-| 15.12 | =%=, =^= and unary minus (3.11): not in the ruling's arithmetic list. | Phase 1: =:%= as a binary operator is accepted (one table entry); =:^= left out (left-associativity trap); unary =:-= with one argument renders =-(x)= parenthesized. Owner can strike. |
-| 15.13 | Per-column =ASC= / =DESC= / =NULLS= in =CREATE INDEX= (11.1): in the grammar, not in the scope list. | IMPLEMENTED (Phase 3): =:columns= of =:create-index= accepts the =:order-by= item shape (=:a=, =[:b :desc]=, =[:c :asc :nulls-last]=, =[[:lower :title]]=), an operator expression parenthesized as the page requires; a bare value is a format error (test =create-index=, =create-index-errors=). |
+| 15.1 | *Identifier quoting strategy.* PostgreSQL folds unquoted identifiers to lower case and only quoted identifiers preserve case (1.1, 1.2); reserved key words (=user=, =order=, =group=, =check=, =end=, ...) cannot be used unquoted as table or column names (1.3). The DSL currently has NO quoting rule: =:user= renders =user= and fails server-side; =:MyCol= renders =MyCol= and names =mycol=. HoneySQL's default is unquoted with an opt-in =:quoted true= (13.8). Options: (a) never quote (status quo, simplest, matches HoneySQL's default; the caller writes =(raw "\"user\"")=); (b) opt-in ={:quoted true}= that double-quotes every entity segment, doubling embedded quotes (1.2) — =:foo/bar= → ="foo"."bar"=, =:*= stays bare; (c) always quote. (c) changes every expected string and breaks the =foo.a= examples; (b) is additive. | DECISION NEEDED before strings are pinned. Recommendation: (a) first, with the entity renderer isolated in one function (14.1), (b) added as an option later with its own exact-string tests; the manual documents the reserved-word list link and the fold rule either way. |
+| 15.2 | *Two-element vectors in =:select=.* HoneySQL: a vector at the top level of =:select= is always =[expr alias]= (="(select [:a :b]) means SELECT a AS b rather than SELECT a, b"=), and a function call with an alias is =[[:count :*] :total]= (13.4). The ambiguity: is =[:count :*]= at the top level of =:select= an alias pair ("count AS *") or a call? Under the HoneySQL rule it is an alias pair and renders nonsense. The scope statement says "function calls in select ([:count :*] style)", which reads as the bare form. | DECISION NEEDED. Recommendation: adopt the HoneySQL rule verbatim (top-level vector in =:select= / =:from= / =:returning= = alias pair; functions nest: =[[:count :*] :n]= or =[[:count :*]]=), because it is unambiguous and documented upstream, AND make the alias position strict: the second element of a pair MUST be a keyword/symbol, so =[:count :*]= with =:*= as "alias" is rejected as a format error with a message naming the nested form — turning the likely mistake into a loud failure. Pinned by tests either way. |
+| 15.3 | Whether a =$N= parameter is legal inside DDL (=CREATE TABLE ... DEFAULT $1=, =CREATE INDEX ... WHERE a = $1=). The documentation says =DEFAULT= takes a "variable-free expression" (8.2) and positional parameters belong to prepared statements and function bodies (1.8); utility statements are not parameterizable in the extended protocol as far as the documentation goes, but it does not say so on these pages. | RESOLVED IN DOCUMENTATION: sql-cljs inlines all DDL literals (14.2) in both modes, so the question never reaches the server; the test =create-table-column-constraints= pins =DEFAULT 'x'= and =:values []= in parameter mode, and the view body and the partial-index predicate are inlined the same way. There is NO smoke build in this repository by design (the library is pure formatting with no live surface); the live check of DDL behavior is a hand-run composition of pg-cljs with sql-cljs, not an automated step here. |
+| 15.4 | Inline mode on a server with =standard_conforming_strings = off=: backslashes in inlined strings would be interpreted as escapes (1.4, 3.6). Default has been =on= since 9.1. | Documented in the README's inline caution; no code path. A later version may double backslashes behind an option if a user asks. |
+| 15.5 | Inline rendering of JavaScript =NaN= / =Infinity= / =-0= numbers (1.5: not numeric constants). | =NaN= and =±Infinity= in inline mode are a format error (=:op :inline=); =-0= renders =0=. Parameter mode passes them through untouched (pg-cljs's concern). Exact-string tests. |
+| 15.6 | Type resolution of an untyped parameter where context gives none (=SELECT $1=, =LIMIT $1= with a string value). The documentation does not state the rule on the pages read. | RESOLVED IN DOCUMENTATION: =LIMIT= / =OFFSET= stay parameterized per 14.4 and tests pin the text. There is NO smoke build in this repository by design (pure formatting, no live surface); the live =EXPLAIN SELECT ... LIMIT $1= check of parameter typing is a hand-run composition of pg-cljs with sql-cljs. If it fails live, =LIMIT= / =OFFSET= numbers become inline integers (a one-line change). |
+| 15.7 | =IN ()= with an empty list: not mentioned by the documentation (3.7); believed to be a syntax error. | =[:in :a []]= is a format error (=:op :in=, message suggesting =FALSE= or a non-empty list), never emitted. Decision; the maintainer can overrule to render =FALSE= / =TRUE=. |
+| 15.8 | Type casts (=::type=, =CAST=) are out of the =0.1.0= scope but almost every real query needs one (=$1::uuid=, =$1::jsonb=). | Not in =0.1.0=. Recorded as the first post-0.1.0 candidate; =(raw "$1::uuid")= cannot work because =$N= numbering is the formatter's. |
+| 15.9 | =FOR NO KEY UPDATE= / =FOR KEY SHARE= (2.11): in the grammar, not in the scope list. | Accept =:no-key-update= / =:key-share= strengths alongside =:update= / =:share= (zero extra code paths, same clause shape) and document them; the maintainer can strike them. |
+| 15.10 | =CONCURRENTLY= on =CREATE INDEX= / =DROP INDEX= (11): cannot run inside a transaction block, and =DROP INDEX CONCURRENTLY= forbids =CASCADE= and multiple names. The scope statement says "document; decide scope". | IMPLEMENTED: =:concurrently true= on both, rendered =CREATE INDEX CONCURRENTLY= / =DROP INDEX CONCURRENTLY=; on =DROP INDEX= a format error (=:op :drop-index=) when combined with =:cascade= or with several names (=:restrict= is accepted, it is the default behavior); tests =create-index=, =drop-index=, =drop-errors=. The manual states the transaction-block restriction. Owner can strike it. |
+| 15.11 | =CREATE OR REPLACE VIEW= (12.1): not in the scope list. | IMPLEMENTED: =:or-replace true= renders =CREATE OR REPLACE VIEW= (test =create-view=); the maintainer can strike it. |
+| 15.12 | =%=, =^= and unary minus (3.11): not in the arithmetic list. | =:%= as a binary operator is accepted (one table entry); =:^= left out (left-associativity trap); unary =:-= with one argument renders =-(x)= parenthesized. The maintainer can strike. |
+| 15.13 | Per-column =ASC= / =DESC= / =NULLS= in =CREATE INDEX= (11.1): in the grammar, not in the scope list. | IMPLEMENTED: =:columns= of =:create-index= accepts the =:order-by= item shape (=:a=, =[:b :desc]=, =[:c :asc :nulls-last]=, =[[:lower :title]]=), an operator expression parenthesized as the page requires; a bare value is a format error (test =create-index=, =create-index-errors=). |
 | 15.14 | Per-value =[:inline x]= special syntax (13.6). | Not in =0.1.0=; the whole-statement option covers the stated use (consoles/debugging). |
-| 15.15 | Whether =[:raw "..."]= (data spelling) is offered in addition to =(sql/raw "...")=. | Phase 1 offers both: =raw= returns a small record and =[:raw s]= is recognized in expression position; identical output. |
-| 15.16 | =:values= as a vector of maps and the =ON CONFLICT DO UPDATE ... WHERE= data shape (14.9). | Phase 2 decides with exact-string tests; the inventory facts (4.2, 4.3) constrain the output only. |
-| 15.17 | =UPDATE ... SET= from a map: CLJS array-maps keep insertion order up to 8 keys, hash-maps beyond do not (14.10). | Phase 2: =:set= accepts a map or a vector of pairs; the manual recommends the vector form (or =array-map=) when order matters (it never matters to PostgreSQL, only to the test strings). |
-| 15.18 | Column type spelling (14.11): multi-word types and array types. | IMPLEMENTED (Phase 3, test =create-table-types=): keyword → upper-case word with =-= as a space (=:double-precision= → =DOUBLE PRECISION=, =:timestamp-with-time-zone=), vector =[keyword & numbers]= → =NAME(args)=, string → format error (strings are values), =raw= → verbatim (array types, =interval hour to minute=). |
-| 15.19 | A bare keyword as =:where= (=:where :active= for =WHERE active=). | Phase 1: format error (=:where= must be a vector); a boolean column is written =[:= :active true]= or =(raw "active")=. Owner can relax. |
-| 15.20 | *No live verification happened in Phase 0*: =psql= is absent, so every "legal / illegal" claim above rests on the documentation alone. | RESOLVED IN DOCUMENTATION (Phase 3): there is NO smoke build in this repository by design: sql-cljs is pure formatting with no live surface, so an automated server check does not belong here. The live verification (=EXPLAIN= of the README's SELECTs, one temporary-table DDL round-trip) is the owner's hand-run check composing pg-cljs with sql-cljs; any finding corrects this inventory IN PLACE. Until then every "legal / illegal" claim above rests on the documentation alone. |
+| 15.15 | Whether =[:raw "..."]= (data spelling) is offered in addition to =(sql/raw "...")=. | Both are offered: =raw= returns a small record and =[:raw s]= is recognized in expression position; identical output. |
+| 15.16 | =:values= as a vector of maps and the =ON CONFLICT DO UPDATE ... WHERE= data shape (14.9). | Decided by exact-string tests; the inventory facts (4.2, 4.3) constrain the output only. |
+| 15.17 | =UPDATE ... SET= from a map: CLJS array-maps keep insertion order up to 8 keys, hash-maps beyond do not (14.10). | =:set= accepts a map or a vector of pairs; the manual recommends the vector form (or =array-map=) when order matters (it never matters to PostgreSQL, only to the test strings). |
+| 15.18 | Column type spelling (14.11): multi-word types and array types. | IMPLEMENTED (test =create-table-types=): keyword → upper-case word with =-= as a space (=:double-precision= → =DOUBLE PRECISION=, =:timestamp-with-time-zone=), vector =[keyword & numbers]= → =NAME(args)=, string → format error (strings are values), =raw= → verbatim (array types, =interval hour to minute=). |
+| 15.19 | A bare keyword as =:where= (=:where :active= for =WHERE active=). | Format error (=:where= must be a vector); a boolean column is written =[:= :active true]= or =(raw "active")=. The maintainer can relax. |
+| 15.20 | *Not live-verified*: =psql= is absent, so every "legal / illegal" claim above rests on the documentation alone. | RESOLVED IN DOCUMENTATION: there is NO smoke build in this repository by design: sql-cljs is pure formatting with no live surface, so an automated server check does not belong here. The live verification (=EXPLAIN= of the README's SELECTs, one temporary-table DDL round-trip) is a hand-run check composing pg-cljs with sql-cljs; any finding corrects this inventory IN PLACE. Until then every "legal / illegal" claim above rests on the documentation alone. |

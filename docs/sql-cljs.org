@@ -184,8 +184,7 @@ parenthesized, a function call there is not.
 Every dot-separated part of an entity must match =[a-z_][a-z0-9_$]*=
 (=sql-cljs.util/identifier-pattern=): a lower-case letter or underscore, then
 lower-case letters, digits, underscores and dollar signs. That is the unquoted
-identifier charset of PostgreSQL in lower case =[SRC
-https://www.postgresql.org/docs/current/sql-syntax-lexical.html]=. PostgreSQL folds
+identifier charset of PostgreSQL in lower case (https://www.postgresql.org/docs/current/sql-syntax-lexical.html). PostgreSQL folds
 an unquoted name to lower case, so a bare =UserId= would name =userid=, a different
 object than it reads; rather than quote silently (and change the meaning of every
 name) the library never quotes and refuses the name: =:UserId= is a format-error with
@@ -195,8 +194,7 @@ written by you, spliced verbatim, accepted wherever a name is (a select item, a 
 item, a =CREATE TABLE= name, a column name in a definition, a =:drop-table= list). The
 same hatch stands for a reserved word used as a name (=(sql/raw "\"user\"")=): the
 library does not detect reserved words, and a bare =user= or =order= fails on the
-server with a syntax error =[SRC
-https://www.postgresql.org/docs/current/sql-keywords-appendix.html]=.
+server with a syntax error (https://www.postgresql.org/docs/current/sql-keywords-appendix.html).
 
 =raw= is copied as is: not validated, not parameterized, not quoted. It is the
 escape hatch for everything the shapes do not spell (a cast, an array type, a window
@@ -212,8 +210,7 @@ function call: =[[:raw "NOW()"]]= or =[[:raw "NOW()"] :now]=.
 =:values []=: =nil= as =NULL=, a string as ='...'= with every ='= doubled and nothing
 else touched (never =E'...'=, never dollar quoting), =true= / =false= as =TRUE= /
 =FALSE=, a number or a BigInt as its decimal text (=-0= renders =0=). =NaN=, =Infinity=
-and =-Infinity= are not SQL numeric constants =[SRC
-https://www.postgresql.org/docs/current/sql-syntax-lexical.html]= and are a
+and =-Infinity= are not SQL numeric constants (https://www.postgresql.org/docs/current/sql-syntax-lexical.html) and are a
 format-error with =:op :inline=; so is any value with no literal spelling the library
 can vouch for (a Date, an object, a function). On a server with
 =standard_conforming_strings = off= (the default has been =on= since PostgreSQL 9.1) a
@@ -561,7 +558,7 @@ Each entry is a diagnosis: what you see, why, what to do.
 
 ** =CREATE INDEX CONCURRENTLY cannot run inside a transaction block=
 The server refuses =CREATE INDEX CONCURRENTLY= and =DROP INDEX CONCURRENTLY= inside
-=BEGIN ... COMMIT= =[SRC https://www.postgresql.org/docs/current/sql-createindex.html]=.
+=BEGIN ... COMMIT= (https://www.postgresql.org/docs/current/sql-createindex.html).
 The library renders =:concurrently true= as written and checks only what the grammar
 states (=DROP INDEX CONCURRENTLY= takes one name and no =CASCADE=). Run the statement
 on its own, outside the transaction that runs the rest of a migration; the
@@ -573,7 +570,7 @@ behind; drop it before retrying.
 Both forms are exposed and the caller picks: =:on-columns= (with an optional
 =:index-where= for a partial unique index) infers the unique index from the columns;
 =:on-constraint= names the constraint. The PostgreSQL documentation prefers inference
-=[SRC https://www.postgresql.org/docs/current/sql-insert.html]=: a constraint name is
+(https://www.postgresql.org/docs/current/sql-insert.html): a constraint name is
 an implementation detail that a migration may rename, while the column list states
 the intent. Only =NOT DEFERRABLE= constraints and unique indexes serve as arbiters;
 the server enforces that, the library does not look. The library chooses nothing
@@ -581,15 +578,14 @@ here by design: it renders either form and never rewrites one into the other.
 
 ** A subquery as a =DEFAULT= formats, then the server rejects it
 =[:default {:select ...}]= in a column definition renders =DEFAULT (SELECT ...)=, as
-written. PostgreSQL does not allow subqueries in a =DEFAULT= expression =[SRC
-https://www.postgresql.org/docs/current/sql-createtable.html]=, so the statement
+written. PostgreSQL does not allow subqueries in a =DEFAULT= expression (https://www.postgresql.org/docs/current/sql-createtable.html), so the statement
 fails on the server. The engine renders what the caller wrote and adds no check of
 its own beyond the grammar shapes; use a function call or a constant.
 
 ** A reserved word as a name fails on the server
 =:user=, =:order=, =:group=, =:check=, =:end=, =:default= as a table or column name
 render bare (=user=) and the server answers with a syntax error at that position
-=[SRC https://www.postgresql.org/docs/current/sql-keywords-appendix.html]=. The
+(https://www.postgresql.org/docs/current/sql-keywords-appendix.html). The
 library does not carry the reserved-word list. Write =(sql/raw "\"user\"")= for the
 name, or rename the column. Note that =:default= in a VALUE slot is the =DEFAULT= key
 word by design, so it can never name a column there.

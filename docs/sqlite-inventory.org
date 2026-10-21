@@ -1,4 +1,4 @@
-#+TITLE: SQLite grammar inventory and consumer study — sql-cljs 0.2.0 phase 0
+#+TITLE: SQLite grammar inventory and consumer study — sql-cljs 0.2.0
 #+DATE: 2026-10-16
 #+STARTUP: overview
 #+OPTIONS: toc:3
@@ -9,11 +9,11 @@ This is the verified inventory of the second external surface sql-cljs will wrap
 SQL grammar of SQLite, for the statements, clauses and operators of the sql-cljs
 =0.1.0= surface (the PostgreSQL inventory, =docs/sql-api-inventory.org=, defines that
 surface clause by clause). sql-cljs =0.2.0= adds a =:sqlite= dialect to =format=; this
-document is the research that the dialect is built from. It is research only: no
-library code changes in this phase, and the file states facts and decision points,
-never decisions (those belong to the Phase 1 brief and its exact-string tests).
+document is the research that the dialect is built from. It fixes contracts, not code:
+the file states facts and decision points, never decisions (those belong to the dialect
+implementation and its exact-string tests).
 
-The consumer of the dialect is sqlite-cljs, the house better-sqlite3 wrapper (section
+The consumer of the dialect is sqlite-cljs, the sibling better-sqlite3 wrapper (section
 1): sql-cljs renders ={:text "..." :values [...]}= and the caller hands it to
 =sqlite-cljs.query/execute!= (or =query-all!=, =execute-all!=) as ={:sql text :params
 values}= or =(into [text] values)=. The dialect therefore has to emit SQL that SQLite
@@ -28,29 +28,27 @@ SQLite lacks a PostgreSQL construct the dialect fails loudly or renders the SQLi
 spelling that means the same thing, and section 13 lists which of the two is on the
 table for each case.
 
-** Evidence tags
-Every fact carries one or more tags:
-- =[SRC url]= — read from the official SQLite documentation at https://sqlite.org/ on
+** Sources and reading conventions
+Every fact cites its source in parentheses:
+- =(https://sqlite.org/...)= — read from the official SQLite documentation on
   2026-10-16. The pages were fetched as HTML, converted to text and grepped; quotations
   are the page's own words. On that date the newest release listed on
   https://sqlite.org/changes.html was 3.54.0 (2026-10-09); the consumer's driver bundles
   3.53.4 (2026-07-24), and every version-gated fact below is older than that.
-- =[BS3 url]= — the better-sqlite3 documentation (=docs/api.md=, =docs/integer.md=) at
-  https://github.com/WiseLibs/better-sqlite3, fetched raw from the =master= branch on
-  2026-10-16.
-- =[CONSUMER path]= — read from the sqlite-cljs checkout at
-  =/Users/kokos/Dev/kokosro/sqlite-cljs= (read-only; its sources, =docs/sqlite-cljs.org=
-  and =docs/sqlite-api-inventory.org=) on 2026-10-16. Where the consumer's inventory
-  records a live probe of its own (its =[LOCAL]= tag) that is reported as the consumer's
-  observation, not as something verified here.
-- =[BUNDLED-SRC]= — read from the amalgamation the consumer's driver ships,
+- =(better-sqlite3 docs/...)= — the better-sqlite3 documentation (=docs/api.md=,
+  =docs/integer.md=) at https://github.com/WiseLibs/better-sqlite3, fetched raw from the
+  =master= branch on 2026-10-16.
+- =(sqlite-cljs path)= — read from the sqlite-cljs checkout (read-only; its sources,
+  =docs/sqlite-cljs.org= and =docs/sqlite-api-inventory.org=) on 2026-10-16. Where the
+  consumer's inventory records a live probe of its own (its =(local)= citation) that is
+  reported as the consumer's observation, not as something verified here.
+- =(bundled source …)= — read from the amalgamation the consumer's driver ships,
   =node_modules/better-sqlite3/deps/sqlite3/sqlite3.c= and =sqlite3.h= (=SQLITE_VERSION
   "3.53.4"=, =SQLITE_VERSION_NUMBER 3053004=). Source-level evidence for the two facts
   the documentation does not state (identifier character set, function-name case).
-- No live SQLite statement was executed in this phase: sql-cljs has no smoke build by
-  design (pure formatting), and the consumer repository was under a parallel
-  verification job and treated as read-only. Everything that only a live round-trip can
-  settle is in section 14 with its plan.
+- No live SQLite statement was executed: sql-cljs has no smoke build by design (pure
+  formatting), and the consumer repository was treated as read-only. Everything that
+  only a live round-trip can settle is in section 14 with its plan.
 
 ** Reading conventions
 - Syntax diagrams on sqlite.org are railroad diagrams; where quoted they appear as the
@@ -79,37 +77,36 @@ Every fact carries one or more tags:
 | 14 | Uncertainties, with settle-later plans                               | complete | 14      |
 
 * 1. The consumer: sqlite-cljs
-All facts in this section are =[CONSUMER ...]= unless tagged otherwise. The consumer's
+All facts in this section are =(sqlite-cljs ...)= unless tagged otherwise. The consumer's
 own house position is relevant because the dialect's output must be something its
 execute layer accepts as is.
 
 ** 1.1 Driver and SQLite version floor
 - The consumer's only runtime npm dependency is =better-sqlite3=, pinned =^13.0.3= in
   its =package.json= =devDependencies= (the consumer installs nothing at runtime; the
-  application installs the driver). =[CONSUMER package.json]=
+  application installs the driver). =(sqlite-cljs package.json)=
 - The installed driver in the consumer's checkout is =13.0.3= (=node_modules/better-
-  sqlite3/package.json= =version=). =[CONSUMER node_modules/better-sqlite3/package.json]=
+  sqlite3/package.json= =version=). =(sqlite-cljs node_modules/better-sqlite3/package.json)=
 - That driver bundles SQLite =3.53.4=: =#define SQLITE_VERSION "3.53.4"= and
-  =SQLITE_VERSION_NUMBER 3053004= in =deps/sqlite3/sqlite3.h=. =[BUNDLED-SRC sqlite3.h
-  lines 149-150]=
+  =SQLITE_VERSION_NUMBER 3053004= in =deps/sqlite3/sqlite3.h=. =(bundled source sqlite3.h
+  lines 149-150)=
 - The consumer documents the same: =(core/sqlite-version d) ; => "3.53.4" (the bundled
   SQLite library)= and =(core/library-version d) ; => "13.0.3" (the driver package)=;
   its inventory's driver census row reads "better-sqlite3 13.0.3 (2026-08-05) ...
-  Bundled SQLite 3.53.4 (v13.0.2 notes; [LOCAL] sqlite_version())". =[CONSUMER
-  docs/sqlite-cljs.org lines 279-282; docs/sqlite-api-inventory.org section 1.1]=
+  Bundled SQLite 3.53.4 (v13.0.2 notes; (local) sqlite_version())". =(sqlite-cljs docs/sqlite-cljs.org lines 279-282; docs/sqlite-api-inventory.org section 1.1)=
 - The consumer's DSL and DDL renderers take =:sqlite-version "3.53.4"= as the render
   option that enables version gates (=RENAME COLUMN= >= 3.25.0, =DROP COLUMN= >= 3.35.0,
   =ALTER COLUMN= >= 3.53.0, =RIGHT=/=FULL JOIN= >= 3.39.0, =IS DISTINCT FROM= >=
-  3.38.0); without the option nothing is gated. =[CONSUMER src/sqlite_cljs/dsl.cljs
-  lines 41, 379-380, 525-526; src/sqlite_cljs/ddl.cljs lines 61-63, 512-520]=
+  3.38.0); without the option nothing is gated. =(sqlite-cljs src/sqlite_cljs/dsl.cljs
+  lines 41, 379-380, 525-526; src/sqlite_cljs/ddl.cljs lines 61-63, 512-520)=
 - 3.53.4 was released 2026-07-24 ("Fixes for problems in 3.53.0 (and 3.53.1, 3.53.2,
   and 3.53.3)"). The version floor the dialect may assume is therefore 3.53.4; every
   feature the =0.1.0= surface needs is far older (newest: =RIGHT=/=FULL JOIN= 3.39.0,
-  =RETURNING= 3.35.0). =[SRC https://sqlite.org/changes.html]=
+  =RETURNING= 3.35.0). (https://sqlite.org/changes.html)
 
 ** 1.2 Statement designators and the bridge shape
 =sqlite-cljs.query/->statement= normalises every query designator to ={:sql "..."
-:params [...]}=. Its =cond=, in order: =[CONSUMER src/sqlite_cljs/query.cljs lines 30-47]=
+:params [...]}=. Its =cond=, in order: =(sqlite-cljs src/sqlite_cljs/query.cljs lines 30-47)=
 | Designator                       | Result                                             |
 |----------------------------------+----------------------------------------------------|
 | a string                         | ={:sql q :params []}=                              |
@@ -128,50 +125,50 @@ Consequences for the bridge (confirmed):
   (=core/reader?*=, so an =INSERT ... RETURNING= resolves to the returned rows) and
   =core/run*= otherwise (resolving to ={:changes n :last-insert-rowid n}=).
   =execute-all!= runs a vector of designators in one =IMMEDIATE= transaction unless one
-  is active and resolves to a vector of the individual results. =[CONSUMER query.cljs
-  lines 49-72, 74-80, 109-128; core.cljs lines 469-500]=
+  is active and resolves to a vector of the individual results. =(sqlite-cljs query.cljs
+  lines 49-72, 74-80, 109-128; core.cljs lines 469-500)=
 - The chunking branch of =execute!= (1.5) is keyed on =(and (map? q) (= :insert
   (dsl/statement-kind q)) (:values q))=, i.e. on the consumer's OWN DSL insert maps.
   =dsl/statement-kind= looks for =:insert-into= in the map; a ={:sql :params}= map has
   no =:insert-into= key, so sql-cljs output never enters the chunking path and is
-  executed as ONE statement. =[CONSUMER query.cljs lines 88-105; dsl.cljs lines 855-862]=
+  executed as ONE statement. =(sqlite-cljs query.cljs lines 88-105; dsl.cljs lines 855-862)=
 - =exec!= takes SQL with NO parameters (a string, possibly several statements, a vector
   of strings, or the consumer's DDL maps) and clears the statement cache; it is the path
   for migrations. sql-cljs DDL output always has =:values []=, so its =:text= can go
   through =exec!= as a string or through =execute!= / =execute-all!= as ={:sql text
   :params []}=; the latter does not clear the consumer's statement cache (1.6).
-  =[CONSUMER query.cljs lines 130-149]=
+  =(sqlite-cljs query.cljs lines 130-149)=
 - =transact!= runs a synchronous body; inside it =@(execute! tx q)= is the idiom.
-  =[CONSUMER query.cljs lines 151-166]=
+  =(sqlite-cljs query.cljs lines 151-166)=
 
 ** 1.3 The parameter style the consumer itself produces
 - The consumer's DSL docstring: "every value becomes a =?= parameter, in left-to-right
   order. Values are never interpolated into SQL." Its one value renderer emits =(frag
   "?" [v])= in =:params= mode (and the =json_each= path emits =json_each(?)= with one
   parameter). No other parameter spelling appears in the render path (grep of =dsl.cljs=
-  for =?=, =@=, =$=, =:name= forms: only =?=). =[CONSUMER dsl.cljs lines 15-17, 131-134,
-  299, 420]=
+  for =?=, =@=, =$=, =:name= forms: only =?=). =(sqlite-cljs dsl.cljs lines 15-17, 131-134,
+  299, 420)=
 - The consumer's house position 7.7, "Only =?= parameters": "the renderer emits
   anonymous =?= in order; named parameters are not exposed (better-sqlite3 rejects
-  =?NNN=, prefixes differ between drivers, §5.6)". =[CONSUMER docs/sqlite-api-
-  inventory.org section 7.7]=
+  =?NNN=, prefixes differ between drivers, §5.6)". =(sqlite-cljs docs/sqlite-api-
+  inventory.org section 7.7)=
 - The consumer's inventory 2.3 records, from its own live probes, that =?NNN= numbered
-  parameters are "documented nowhere in api.md; [LOCAL] =select ?2, ?1= with any
+  parameters are "documented nowhere in api.md; (local) =select ?2, ?1= with any
   argument shape → RangeError Too many parameter values. Treat as unsupported."; that
   =@name= / =:name= / =$name= take one object argument with bare keys; and that mixing
-  named and anonymous (=run(45, {name: 'x'})=) works. =[CONSUMER docs/sqlite-api-
-  inventory.org section 2.3]= The driver's own documentation shows the same three named
+  named and anonymous (=run(45, {name: 'x'})=) works. =(sqlite-cljs docs/sqlite-api-
+  inventory.org section 2.3)= The driver's own documentation shows the same three named
   prefixes, the mixed example, and anonymous =?= with positional or array arguments
-  (2.4 below). =[BS3 docs/api.md "Binding Parameters"]=
+  (2.4 below). =(better-sqlite3 docs/api.md "Binding Parameters")=
 - Conclusion for the dialect: anonymous =?= in order of appearance, one per value, is
   exactly what the consumer emits and what its execute layer passes as a flat array
   (=core/->params= builds a JS array from the =:params= vector and the driver flattens
   arrays: "stmt.run(['John', 'Smith', 45])" is equivalent to "stmt.run('John', 'Smith',
-  45)"). =[CONSUMER core.cljs lines 156-168]= =[BS3 docs/api.md "Binding Parameters"]=
+  45)"). =(sqlite-cljs core.cljs lines 156-168)= =(better-sqlite3 docs/api.md "Binding Parameters")=
 
 ** 1.4 Value binding rules (what happens to sql-cljs's untouched =:values=)
-=core/->param= converts each value before binding: =[CONSUMER core.cljs lines 27-33,
-114-154]=
+=core/->param= converts each value before binding: =(sqlite-cljs core.cljs lines 27-33,
+114-154)=
 | ClojureScript value                        | bound as                                   |
 |--------------------------------------------+--------------------------------------------|
 | =nil=                                      | NULL                                       |
@@ -196,9 +193,9 @@ with section 6), and a keyword in a VALUE position of a sql-cljs statement is im
   of the bundled SQLite: the maximum number of bound parameters in one statement";
   =core/->params= throws =:sqlite-cljs/argument-error= =:reason :too-many-parameters=
   when a statement's parameter vector is longer. =dsl/default-max-params= is the same
-  =32766=. =[CONSUMER core.cljs lines 66-69, 156-164; dsl.cljs lines 51-53]=
+  =32766=. =(sqlite-cljs core.cljs lines 66-69, 156-164; dsl.cljs lines 51-53)=
 - The driver's compile options pin =MAX_VARIABLE_NUMBER=32766=, the SQLite default since
-  3.32.0 (section 2). =[CONSUMER docs/sqlite-api-inventory.org section 2.8]=
+  3.32.0 (section 2). =(sqlite-cljs docs/sqlite-api-inventory.org section 2.8)=
 - Chunking: =execute!= chunks ONLY the consumer's own DSL inserts (=dsl/render-chunked=
   splits =:values= rows so each statement stays within =:max-params=, and runs the
   chunks in one =IMMEDIATE= transaction). sql-cljs does not chunk and its output is not a
@@ -207,49 +204,47 @@ with section 6), and a keyword in a VALUE position of a sql-cljs statement is im
   limit: rows × columns (plus any other placeholders in the statement) must stay ≤ 32766
   per =format= call; splitting rows is the caller's job (or =format= one statement per
   chunk and run them through =execute-all!=, which wraps the vector in one transaction).
-  =[CONSUMER query.cljs lines 84-105; dsl.cljs lines 909-928]=
+  =(sqlite-cljs query.cljs lines 84-105; dsl.cljs lines 909-928)=
 
 ** 1.6 Statement cache and other execution facts a dialect must respect
 - Prepared statements are cached per connection in a 128-entry LRU keyed on the exact
   SQL text; =exec!= and =migrate!= clear it, =execute-all!= clears it after a consumer
   DDL map. A ={:sql :params}= DDL statement from sql-cljs executed through =execute!=
   does NOT clear the cache; the consumer's inventory 7.17 ("Statement caching vs schema
-  changes") is the caller's reading. =[CONSUMER query.cljs lines 18-20, 118-121;
-  core.cljs lines 62-64, 226-256]=
+  changes") is the caller's reading. =(sqlite-cljs query.cljs lines 18-20, 118-121;
+  core.cljs lines 62-64, 226-256)=
 - Deterministic text is therefore a feature: the same statement map always renders the
   same =:text=, so it hits the cache.
 - =core/wrap-error= maps a driver =RangeError= whose message mentions "parameter" to
   =:sqlite-cljs/argument-error= =:reason :parameter-count=; this is what a mismatch
-  between =?= count and =:values= length would surface as. =[CONSUMER core.cljs lines
-  84-110]=
+  between =?= count and =:values= length would surface as. =(sqlite-cljs core.cljs lines
+  84-110)=
 - The driver is compiled with =SQLITE_DQS=0=: a double-quoted token that is not an
-  identifier is an error instead of a string literal (section 3.3). =[CONSUMER
-  docs/sqlite-api-inventory.org section 2.8]=
+  identifier is an error instead of a string literal (section 3.3). =(sqlite-cljs docs/sqlite-api-inventory.org section 2.8)=
 - The driver is compiled with =SQLITE_ENABLE_UPDATE_DELETE_LIMIT= (=UPDATE= / =DELETE
   ... ORDER BY ... LIMIT= available); not part of the =0.1.0= surface, recorded only.
-  =[CONSUMER docs/sqlite-api-inventory.org section 2.8]=
+  =(sqlite-cljs docs/sqlite-api-inventory.org section 2.8)=
 
 ** 1.7 Anything in the consumer that would make a =?=-positional dialect wrong
 Nothing found. Checked:
 - Cache keyed on SQL text: fine (1.6).
 - Mixing anonymous and named parameters: the driver documents it as working and the
   consumer observed it working, but the dialect emits only =?= so the question never
-  arises. =[BS3 docs/api.md "Binding Parameters"]= =[CONSUMER inventory 2.3]=
+  arises. =(better-sqlite3 docs/api.md "Binding Parameters")= =(sqlite-cljs inventory 2.3)=
 - Parameter count: the driver throws on too few / too many values; sql-cljs always emits
   exactly one =?= per entry of =:values= (same rule as =$N= numbering), so the counts
-  match by construction. =[CONSUMER inventory 2.3]=
+  match by construction. =(sqlite-cljs inventory 2.3)=
 - Objects as parameters: the driver interprets a plain object as a named-parameter map;
   sql-cljs never produces objects in =:values= (values are the caller's own leaves and
-  =core/->param= rejects collections and objects anyway). =[CONSUMER inventory 2.3;
-  core.cljs lines 147-154]=
+  =core/->param= rejects collections and objects anyway). =(sqlite-cljs inventory 2.3;
+  core.cljs lines 147-154)=
 - An unbound =?= reads as NULL in SQLite, but the driver refuses count mismatches, so a
   silently-NULL parameter cannot happen through =execute!=; it can through =exec!=,
   which binds nothing, so DDL text with a stray =?= would silently bind NULL there. sql-
-  cljs DDL inlines every literal and has no =?=, so the path is clean. =[SRC
-  https://sqlite.org/lang_expr.html#varparam]= =[CONSUMER inventory 2.2]=
+  cljs DDL inlines every literal and has no =?=, so the path is clean. (https://sqlite.org/lang_expr.html#varparam) =(sqlite-cljs inventory 2.2)=
 
 * 2. Parameters
-Page: =[SRC https://sqlite.org/lang_expr.html#varparam]= (section "4. Parameters")
+Page: (https://sqlite.org/lang_expr.html#varparam) (section "4. Parameters")
 unless tagged otherwise.
 - "A 'variable' or 'parameter' token specifies a placeholder in the expression for a
   value that is filled in at runtime using the sqlite3_bind() family of C/C++
@@ -269,33 +264,32 @@ unless tagged otherwise.
 - The same five templates are listed by the C interface page, which adds: "The index for
   '?NNN' parameters is the value of NNN. The NNN value must be between 1 and the
   sqlite3_limit() parameter SQLITE_LIMIT_VARIABLE_NUMBER (default value: 32766)." and
-  "Unbound parameters are interpreted as NULL." =[SRC https://sqlite.org/c3ref/bind_blob.html]=
+  "Unbound parameters are interpreted as NULL." (https://sqlite.org/c3ref/bind_blob.html)
 - The limit: "the maximum value of a host parameter number is
   SQLITE_MAX_VARIABLE_NUMBER, which defaults to 999 for SQLite versions prior to 3.32.0
   (2020-05-22) or 32766 for SQLite versions after 3.32.0. The maximum host parameter
   number can be lowered at run-time using the
   sqlite3_limit(db,SQLITE_LIMIT_VARIABLE_NUMBER,size) interface." The same section
   explains why: "SQLite allocates space to hold all host parameters between 1 and the
-  largest host parameter number used." =[SRC https://sqlite.org/limits.html]= The
+  largest host parameter number used." (https://sqlite.org/limits.html) The
   3.32.0 change-log entry: "Increase the default upper bound on the number of parameters
-  from 999 to 32766." =[SRC https://sqlite.org/changes.html]=
+  from 999 to 32766." (https://sqlite.org/changes.html)
 - Where parameters are NOT allowed (DDL): a =DEFAULT= expression "is considered
   constant if it contains no sub-queries, column or table references, bound parameters,
-  or string literals enclosed in double-quotes instead of single-quotes" =[SRC
-  https://sqlite.org/lang_createtable.html#dfltval]=; a partial index "WHERE clause may
+  or string literals enclosed in double-quotes instead of single-quotes" (https://sqlite.org/lang_createtable.html#dfltval); a partial index "WHERE clause may
   not contain subqueries, references to other tables, non-deterministic functions, or
-  bound parameters" =[SRC https://sqlite.org/partialindex.html]=. The consumer observed
-  (its =[LOCAL]=) =DEFAULT ?= → =SQLITE_ERROR= and =create view ... where x = ?= →
-  "parameters prohibited in views". =[CONSUMER docs/sqlite-api-inventory.org sections
-  3.4, 3.11]= sql-cljs already inlines every DDL literal in both modes, so this matches.
+  bound parameters" (https://sqlite.org/partialindex.html). The consumer observed
+  (its =(local)=) =DEFAULT ?= → =SQLITE_ERROR= and =create view ... where x = ?= →
+  "parameters prohibited in views". =(sqlite-cljs docs/sqlite-api-inventory.org sections
+  3.4, 3.11)= sql-cljs already inlines every DDL literal in both modes, so this matches.
 - =?= semantics for the dialect, restated: emitting =?= for every value in order of
   textual appearance assigns numbers 1, 2, 3, ... exactly as =$1, $2, $3= do in the
   PostgreSQL dialect; a value used twice is two =?= and two entries, as today. The only
   spelling the dialect emits is =?= (1.3); the driver's acceptance of =?= with a flat
-  array is 1.3 / =[BS3 docs/api.md "Binding Parameters"]=.
+  array is 1.3 / =(better-sqlite3 docs/api.md "Binding Parameters")=.
 
 * 3. Identifiers and key words
-** 3.1 Quoting =[SRC https://sqlite.org/lang_keywords.html]=
+** 3.1 Quoting (https://sqlite.org/lang_keywords.html)
 - "If you want to use a keyword as a name, you need to quote it. There are four ways of
   quoting keywords in SQLite:" ='keyword'= "A keyword in single quotes is a string
   literal."; ="keyword"= "A keyword in double-quotes is an identifier."; =[keyword]= "A
@@ -333,15 +327,13 @@ unless tagged otherwise.
   those keywords are used in a context where it is clear that they are intended to be an
   identifier. For example, the following statement is valid in SQLite: CREATE TABLE
   union(true INT, with BOOLEAN);" ... "However, the ability to use a keyword as an
-  identifier sometimes leads to surprising outcomes." =[SRC
-  https://sqlite.org/quirks.html#keywords_can_often_be_used_as_identifiers]=
+  identifier sometimes leads to surprising outcomes." (https://sqlite.org/quirks.html#keywords_can_often_be_used_as_identifiers)
 
 ** 3.2 What a bare lower-case name means in SQLite
 - Bare identifiers are the normal spelling in every syntax diagram (=table-name=,
-  =column-name=, =index-name= are bare tokens) =[SRC https://sqlite.org/lang_select.html]=,
+  =column-name=, =index-name= are bare tokens) (https://sqlite.org/lang_select.html),
   and the documentation's own examples use them bare and lower-case (=CREATE TABLE
-  t(x INTEGER PRIMARY KEY ASC, y, z)=, =SELECT ... FROM vocabulary=) =[SRC
-  https://sqlite.org/lang_createtable.html#rowid]= =[SRC https://sqlite.org/lang_upsert.html]=.
+  t(x INTEGER PRIMARY KEY ASC, y, z)=, =SELECT ... FROM vocabulary=) (https://sqlite.org/lang_createtable.html#rowid) (https://sqlite.org/lang_upsert.html).
   A name matching sql-cljs's bare rule =[a-z_][a-z0-9_$]*= is therefore valid SQLite.
 - Case: the official pages read for this inventory contain NO general sentence of the
   form "identifiers are case-insensitive" (grep of lang_keywords.html, quirks.html,
@@ -350,11 +342,11 @@ unless tagged otherwise.
   names 'rowid', 'oid', or '_rowid_'"; a column becomes the rowid alias when its
   "declared type of that column is 'INTEGER' in any mixture of upper and lower case";
   =DEFAULT= accepts "the special case-independent keywords CURRENT_TIME, CURRENT_DATE
-  or CURRENT_TIMESTAMP". =[SRC https://sqlite.org/lang_createtable.html]= The
+  or CURRENT_TIMESTAMP". (https://sqlite.org/lang_createtable.html) The
   consumer's inventory states (its own reading, tagged with lang_keywords / quirks there)
   "Names are case-insensitive for matching but case-preserving in the schema (CREATE
-  TABLE "Users" can later be referenced as users)". =[CONSUMER docs/sqlite-api-
-  inventory.org section 5.8]= The difference from PostgreSQL that matters: PostgreSQL
+  TABLE "Users" can later be referenced as users)". =(sqlite-cljs docs/sqlite-api-
+  inventory.org section 5.8)= The difference from PostgreSQL that matters: PostgreSQL
   FOLDS an unquoted name to lower case and stores it folded; SQLite (per the consumer's
   statement and the source-level ASCII-only comparison helpers, 3.4) keeps the written
   case in the schema and matches names without regard to ASCII case. A bare lower-case
@@ -365,12 +357,11 @@ unless tagged otherwise.
   consumer's driver (=SQLITE_DQS=0=, 1.6) a double-quoted token that does not resolve
   to an identifier is an error ("no such column"), which is what the quirks page
   recommends: "Application developers are encouraged to compile using -DSQLITE_DQS=0 in
-  order to disable the double-quoted string literal misfeature by default." =[SRC
-  https://sqlite.org/quirks.html#dblquote]= sql-cljs never emits double quotes except
+  order to disable the double-quoted string literal misfeature by default." (https://sqlite.org/quirks.html#dblquote) sql-cljs never emits double quotes except
   through =raw=, so this only affects callers who hand-write ="UserId"= fragments: that
   keeps working.
 
-** 3.3 Identifier character set =[BUNDLED-SRC sqlite3.c]=
+** 3.3 Identifier character set =(bundled source sqlite3.c)=
 Not documented on sqlite.org. In the bundled amalgamation the tokenizer's test is
 =#define IdChar(C) ((sqlite3CtypeMap[(unsigned char)C]&0x46)!=0)= (line 186269) and
 =sqlite3CtypeMap= gives =0x40= to =$= (row =/* 20..27  !"#$%&' */=: =0x01, 0x00, 0x80,
@@ -381,16 +372,15 @@ Source-level evidence only; 14.2 records the live confirmation.
 
 ** 3.4 Function names
 - The core functions page spells every built-in in lower case (=like(X,Y)=, =lower(X)=,
-  =coalesce(X,Y,...)=, =iif(X,Y,Z)=) and says nothing about case. =[SRC
-  https://sqlite.org/lang_corefunc.html]=
+  =coalesce(X,Y,...)=, =iif(X,Y,Z)=) and says nothing about case. (https://sqlite.org/lang_corefunc.html)
 - In the bundled source the built-in lookup compares names case-insensitively:
   =sqlite3FunctionSearch= loops =if( sqlite3StrICmp(p->zName, zFunc)==0 ) return p;=
   (line 132698 ff.), where =sqlite3StrICmp= is the library's ASCII case-insensitive
   compare ("The sqlite versions only work for ASCII characters, regardless of locale",
-  comment at line 21688). =[BUNDLED-SRC sqlite3.c]= So sql-cljs's upper-case =COUNT(*)=,
+  comment at line 21688). =(bundled source sqlite3.c)= So sql-cljs's upper-case =COUNT(*)=,
   =COALESCE(...)=, =LOWER(...)= resolve to the built-ins. Source-level evidence; 14.3.
 
-** 3.5 String constants =[SRC https://sqlite.org/lang_expr.html#literal_values_constants]=
+** 3.5 String constants (https://sqlite.org/lang_expr.html#literal_values_constants)
 - "A string constant is formed by enclosing the string in single quotes ('). A single
   quote within the string can be encoded by putting two single quotes in a row - as in
   Pascal. C-style escapes using the backslash character are not supported because they
@@ -400,7 +390,7 @@ Source-level evidence only; 14.2 records the live confirmation.
   (=TRUE= / =FALSE= are covered in section 6.)
 
 * 4. SELECT
-Page: =[SRC https://sqlite.org/lang_select.html]= unless tagged otherwise.
+Page: (https://sqlite.org/lang_select.html) unless tagged otherwise.
 
 ** 4.1 Shape of the statement
 - =select-stmt= is =[WITH [RECURSIVE] common-table-expression, ...] select-core
@@ -442,7 +432,7 @@ Page: =[SRC https://sqlite.org/lang_select.html]= unless tagged otherwise.
   "A 'FULL JOIN' or 'FULL OUTER JOIN' is a combination of a 'LEFT JOIN' and a 'RIGHT
   JOIN'."
 - Version: 3.39.0 (2022-06-25): "Add (long overdue) support for RIGHT and FULL OUTER
-  JOIN." =[SRC https://sqlite.org/changes.html]= Within the 3.53.4 floor.
+  JOIN." (https://sqlite.org/changes.html) Within the 3.53.4 floor.
 - =USING=: "If there is a USING clause then each of the column names specified must
   exist in the datasets to both the left and right of the join-operator. ... For each
   pair of columns identified by a USING clause, the column from the left-hand dataset is
@@ -466,7 +456,7 @@ Page: =[SRC https://sqlite.org/lang_select.html]= unless tagged otherwise.
   purposes. Hence, NULLs naturally appear at the beginning of an ASC order-by and at the
   end of a DESC order-by. This can be changed using the 'ASC NULLS LAST' or 'DESC NULLS
   FIRST' syntax." Version: 3.30.0 (2019-10-04) "Add support for the NULLS FIRST and
-  NULLS LAST syntax in ORDER BY clauses." =[SRC https://sqlite.org/changes.html]=
+  NULLS LAST syntax in ORDER BY clauses." (https://sqlite.org/changes.html)
 - Difference from PostgreSQL (its default is NULLS LAST for ASC, NULLS FIRST for DESC):
   SQLite's default is the opposite. sql-cljs never emits a default, so only callers who
   rely on the engine default see this; the manual's gotcha list gets a line.
@@ -491,13 +481,13 @@ Page: =[SRC https://sqlite.org/lang_select.html]= unless tagged otherwise.
 - Grammar: =OFFSET= exists only inside the =LIMIT= clause (diagram: =LIMIT expr [OFFSET
   expr | , expr]=); there is no standalone =OFFSET= without =LIMIT=. The consumer's DSL
   rejects =:offset= without =:limit= with the message "SQLite has no OFFSET without
-  LIMIT; use :limit -1 for no limit". =[CONSUMER dsl.cljs line 574]=
+  LIMIT; use :limit -1 for no limit". =(sqlite-cljs dsl.cljs line 574)=
 - =LIMIT ALL= does not occur on the page (grep count 0). PostgreSQL's =LIMIT ALL= has
   no SQLite spelling; the SQLite way to say "no upper bound" is a negative =LIMIT=
   (quoted above). Decision point in 13.4.
 - A parameter is a legal =LIMIT= / =OFFSET= expression ("Any scalar expression"), so
   =LIMIT ?= with a bound integer is fine; the consumer's inventory says the same
-  ("expressions must be integers (bound parameters fine)"). =[CONSUMER inventory 5.4]=
+  ("expressions must be integers (bound parameters fine)"). =(sqlite-cljs inventory 5.4)=
 
 ** 4.6 Compound SELECT: UNION, UNION ALL, INTERSECT, EXCEPT
 - Operators: =compound-operator= is =UNION= | =UNION ALL= | =INTERSECT= | =EXCEPT=.
@@ -527,9 +517,9 @@ Page: =[SRC https://sqlite.org/lang_select.html]= unless tagged otherwise.
   SQLite rejects the parenthesized form (the grammar says so; a round-trip would make
   it certain).
 - Limit: "The maximum number of terms is SQLITE_MAX_COMPOUND_SELECT which defaults to
-  500." =[SRC https://sqlite.org/limits.html]=
+  500." (https://sqlite.org/limits.html)
 
-** 4.7 WITH (common table expressions) =[SRC https://sqlite.org/lang_with.html]=
+** 4.7 WITH (common table expressions) (https://sqlite.org/lang_with.html)
 - Grammar: =WITH [RECURSIVE] cte-table-name AS [[NOT] MATERIALIZED] ( select-stmt ),
   ...= where =common-table-expression= is =table-name [( column-name, ... )] AS [NOT
   MATERIALIZED | MATERIALIZED] ( select-stmt )=. The body is a =select-stmt= ONLY: an
@@ -557,12 +547,10 @@ Page: =[SRC https://sqlite.org/lang_select.html]= unless tagged otherwise.
   subsequent SELECT statement of a compound select." "The WITH clause cannot be used
   within a CREATE TRIGGER."
 - =WITH= before =INSERT= / =UPDATE= / =DELETE=: each of those statements' diagrams
-  begins with =[WITH [RECURSIVE] common-table-expression, ...]=. =[SRC
-  https://sqlite.org/lang_insert.html]= =[SRC https://sqlite.org/lang_update.html]=
-  =[SRC https://sqlite.org/lang_delete.html]=
+  begins with =[WITH [RECURSIVE] common-table-expression, ...]=. (https://sqlite.org/lang_insert.html) (https://sqlite.org/lang_update.html)
+  (https://sqlite.org/lang_delete.html)
 - Window functions (not in the =0.1.0= surface): "Window function support was first
-  added to SQLite with release version 3.25.0 (2018-09-15)." =[SRC
-  https://sqlite.org/windowfunctions.html]=
+  added to SQLite with release version 3.25.0 (2018-09-15)." (https://sqlite.org/windowfunctions.html)
 
 ** 4.8 Locking clauses: none
 - =FOR UPDATE=, =FOR SHARE=, =SKIP LOCKED= do not occur on the SELECT page (grep count 0
@@ -570,9 +558,9 @@ Page: =[SRC https://sqlite.org/lang_select.html]= unless tagged otherwise.
   clause; "A SELECT statement does not make any changes to the database." SQLite has no
   row-level locking clause; concurrency is per-database-file (the consumer's inventory
   7.6 "one connection, serialised, IMMEDIATE transactions" is the caller's model).
-  =[CONSUMER docs/sqlite-api-inventory.org section 7.6]= Consequence in 13.6.
+  =(sqlite-cljs docs/sqlite-api-inventory.org section 7.6)= Consequence in 13.6.
 
-** 4.9 Expressions the surface uses =[SRC https://sqlite.org/lang_expr.html]=
+** 4.9 Expressions the surface uses (https://sqlite.org/lang_expr.html)
 - Operator precedence (highest to lowest, the page's table): =~ + -= (unary); =COLLATE=;
   =|| -> ->>=; =* / %=; =+ -=; =& | << >>=; =ESCAPE=; =< > <= >==; == == <> != IS IS NOT
   IS DISTINCT FROM IS NOT DISTINCT FROM=; =BETWEEN ... AND=; =IN MATCH LIKE REGEXP
@@ -593,7 +581,7 @@ Page: =[SRC https://sqlite.org/lang_select.html]= unless tagged otherwise.
   NULL value is still NULL. All other values are considered true." (section 6 below.)
 
 * 5. LIKE
-Page: =[SRC https://sqlite.org/lang_expr.html#like]= (section "5. The LIKE, GLOB,
+Page: (https://sqlite.org/lang_expr.html#like) (section "5. The LIKE, GLOB,
 REGEXP, MATCH, and extract operators") unless tagged otherwise.
 ** 5.1 Case-insensitive by default
 - "The LIKE operator does a pattern matching comparison. The operand to the right of the
@@ -611,22 +599,20 @@ REGEXP, MATCH, and extract operators") unless tagged otherwise.
 - "The infix LIKE operator is implemented by calling the application-defined SQL
   functions like(Y,X) or like(Y,X,Z)." The core-functions page: "The like() function is
   used to implement the 'Y LIKE X [ESCAPE Z]' expression." and "The sqlite3_create_
-  function() interface can be used to override the like() function". =[SRC
-  https://sqlite.org/lang_corefunc.html#like]=
+  function() interface can be used to override the like() function". (https://sqlite.org/lang_corefunc.html#like)
 - =ESCAPE=: "If the optional ESCAPE clause is present, then the expression following the
   ESCAPE keyword must evaluate to a string consisting of a single character."
 - The FAQ: "The default configuration of SQLite only supports case-insensitive
-  comparisons of ASCII characters." =[SRC https://sqlite.org/faq.html#q18]= The quirks
+  comparisons of ASCII characters." (https://sqlite.org/faq.html#q18) The quirks
   page: "SQLite does not know about the upper-case/lower-case distinction for all
   unicode characters. SQL functions like upper() and lower() only work on ASCII
-  characters." =[SRC https://sqlite.org/quirks.html#no_separate_boolean_datatype]=
+  characters." (https://sqlite.org/quirks.html#no_separate_boolean_datatype)
   (section 7 of that page).
 
 ** 5.2 No ILIKE
 - =ILIKE= does not occur on the expression page, the SELECT page, the core-functions
   page or the language index (grep count 0 on each fetched text; the language index
-  lists 42 syntax pages and none is ILIKE). =[SRC https://sqlite.org/lang.html]= =[SRC
-  https://sqlite.org/lang_corefunc.html]= There is no case-insensitive-LIKE function
+  lists 42 syntax pages and none is ILIKE). (https://sqlite.org/lang.html) (https://sqlite.org/lang_corefunc.html) There is no case-insensitive-LIKE function
   either: "The only LIKE functions listed are like(X,Y) and like(X,Y,Z)."
 - The case-SENSITIVE alternative SQLite offers is =GLOB=: "The GLOB operator is similar
   to LIKE but uses the Unix file globbing syntax for its wildcards. Also, GLOB is case
@@ -644,36 +630,35 @@ PostgreSQL semantics: =LIKE= case-sensitive, =ILIKE= case-insensitive. SQLite se
 - =[:ilike a b]= has a natural SQLite rendering, plain =a LIKE ?=, which gives the
   caller the PostgreSQL meaning of =ILIKE= for ASCII; beyond ASCII it is still
   case-sensitive, which PostgreSQL's =ILIKE= is not.
-- Candidates for Phase 1: (a) =:ilike= → =LIKE=, =:like= → =LIKE=, both documented as
+- Candidates: (a) =:ilike= → =LIKE=, =:like= → =LIKE=, both documented as
   ASCII-case-insensitive in SQLite; (b) =:ilike= → =LIKE= and =:like= → format error
   (no case-sensitive LIKE available); (c) both format errors. The choice belongs to the
-  Phase 1 brief; the facts above are what it has to weigh.
+  dialect implementation; the facts above are what it has to weigh.
 
 * 6. Booleans
 - Storage: "SQLite does not have a separate Boolean storage class. Instead, Boolean
   values are stored as integers 0 (false) and 1 (true). SQLite recognizes the keywords
   'TRUE' and 'FALSE', as of version 3.23.0 (2018-04-02) but those keywords are really
-  just alternative spellings for the integer literals 1 and 0 respectively." =[SRC
-  https://sqlite.org/datatype3.html#boolean_datatype]=
+  just alternative spellings for the integer literals 1 and 0 respectively." (https://sqlite.org/datatype3.html#boolean_datatype)
 - Expression page: "Beginning with SQLite 3.23.0 (2018-04-02), SQLite recognizes the
   identifiers 'TRUE' and 'FALSE' as boolean literals, if and only if those identifiers
   are not already used for some other meaning. If there already exists columns or
   tables or other objects named TRUE or FALSE, then for the sake of backwards
   compatibility, the TRUE and FALSE identifiers refer to those other objects, not to the
-  boolean values." =[SRC https://sqlite.org/lang_expr.html#boolean_expressions]=
+  boolean values." (https://sqlite.org/lang_expr.html#boolean_expressions)
 - Change log 3.23.0 (2018-04-02): "Recognize TRUE and FALSE as constants. (For
   compatibility, if there exist columns named 'true' or 'false', then the identifiers
   refer to the columns rather than Boolean constants.)" and "Support operators IS TRUE,
-  IS FALSE, IS NOT TRUE, and IS NOT FALSE." =[SRC https://sqlite.org/changes.html]=
+  IS FALSE, IS NOT TRUE, and IS NOT FALSE." (https://sqlite.org/changes.html)
 - Quirks page: "Unlike most other SQL implementations, SQLite does not have a separate
   BOOLEAN data type. Instead, TRUE and FALSE are (normally) represented as integers 1
-  and 0, respectively." =[SRC https://sqlite.org/quirks.html#no_separate_boolean_datatype]=
+  and 0, respectively." (https://sqlite.org/quirks.html#no_separate_boolean_datatype)
 - =TRUE= / =FALSE= are not in the key-word list (3.1), which is why a column named
   =true= shadows them.
 - The consumer binds booleans as INTEGER 1/0 (1.4) and its DDL literal mode renders
-  =true= as =1= and =false= as =0=. =[CONSUMER dsl.cljs lines 104-108]= Its house
-  position 7.1 is "INTEGER 0/1 for booleans". =[CONSUMER docs/sqlite-api-inventory.org
-  section 7.1]=
+  =true= as =1= and =false= as =0=. =(sqlite-cljs dsl.cljs lines 104-108)= Its house
+  position 7.1 is "INTEGER 0/1 for booleans". =(sqlite-cljs docs/sqlite-api-inventory.org
+  section 7.1)=
 - Where sql-cljs spells a boolean itself (only in inline mode and in DDL literals, since
   parameter mode passes the value through): =0.1.0= renders =TRUE= / =FALSE=. For
   SQLite 3.53.4 those key words are accepted (3.23.0 floor) but are shadowed by any
@@ -683,7 +668,7 @@ PostgreSQL semantics: =LIKE= case-sensitive, =ILIKE= case-insensitive. SQLite se
   Not decided here.
 
 * 7. INSERT and UPSERT
-** 7.1 INSERT =[SRC https://sqlite.org/lang_insert.html]=
+** 7.1 INSERT (https://sqlite.org/lang_insert.html)
 - Diagram: =[WITH [RECURSIVE] cte, ...] INSERT [OR ABORT | OR FAIL | OR IGNORE | OR
   REPLACE | OR ROLLBACK] | REPLACE INTO [schema-name .] table-name [AS alias] [(
   column-name, ... )] { VALUES ( expr, ... ), ... [upsert-clause] | select-stmt
@@ -708,11 +693,11 @@ PostgreSQL semantics: =LIKE= case-sensitive, =ILIKE= case-insensitive. SQLite se
   not supported after DEFAULT VALUES." (sql-cljs has no =DEFAULT VALUES= form.)
 - No =DEFAULT= key word inside a =VALUES= row: the row grammar is =( expr, ... )= and
   the only =DEFAULT= on the page is the =DEFAULT VALUES= form; the consumer's manual
-  states "SQLite's VALUES has no DEFAULT keyword". =[CONSUMER docs/sqlite-cljs.org line
-  646]= sql-cljs's =:default= in a value slot (PG =DEFAULT=) has no SQLite spelling
+  states "SQLite's VALUES has no DEFAULT keyword". =(sqlite-cljs docs/sqlite-cljs.org line
+  646)= sql-cljs's =:default= in a value slot (PG =DEFAULT=) has no SQLite spelling
   (13.9).
 
-** 7.2 UPSERT: ON CONFLICT =[SRC https://sqlite.org/lang_upsert.html]=
+** 7.2 UPSERT: ON CONFLICT (https://sqlite.org/lang_upsert.html)
 - Diagram: =upsert-clause= is =ON CONFLICT [( indexed-column, ... ) [WHERE expr]] DO {
   NOTHING | UPDATE SET { column-name | column-name-list } = expr, ... [WHERE expr] }=,
   repeatable.
@@ -723,8 +708,7 @@ PostgreSQL semantics: =LIKE= case-sensitive, =ILIKE= case-insensitive. SQLite se
   resolution without a conflict target in SQLite version 3.35.0 (2021-03-12)." Change
   log 3.24.0: "Add support for PostgreSQL-style UPSERT."; 3.35.0: "Generalize UPSERT:
   Allow multiple ON CONFLICT clauses that are evaluated in order, The final ON CONFLICT
-  clause may omit the conflict target and yet still use DO UPDATE." =[SRC
-  https://sqlite.org/changes.html]=
+  clause may omit the conflict target and yet still use DO UPDATE." (https://sqlite.org/changes.html)
 - Conflict target: "The syntax in between the 'ON CONFLICT' and 'DO' keywords is called
   the 'conflict target'. The conflict target specifies a uniqueness constraint that will
   trigger the upsert. The conflict target may be omitted on the last ON CONFLICT clause
@@ -739,7 +723,7 @@ PostgreSQL semantics: =LIKE= case-sensitive, =ILIKE= case-insensitive. SQLite se
   (grep count 0): PostgreSQL's =ON CONFLICT ON CONSTRAINT name= has no SQLite
   equivalent; the consumer's inventory records the same ("SQLite has no named conflict
   targets; targets are column lists (+ optional :where for partial unique indexes)").
-  =[CONSUMER docs/sqlite-api-inventory.org section 6.2]=
+  =(sqlite-cljs docs/sqlite-api-inventory.org section 6.2)=
 - =excluded.=: "the expression in the DO UPDATE clause is of the form
   'excluded.phonenumber'. The 'excluded.' prefix causes the 'phonenumber' to refer to
   the value for phonenumber that would have been inserted had there been no conflict."
@@ -764,7 +748,7 @@ PostgreSQL semantics: =LIKE= case-sensitive, =ILIKE= case-insensitive. SQLite se
   recorded.
 
 * 8. RETURNING
-Page: =[SRC https://sqlite.org/lang_returning.html]=.
+Page: (https://sqlite.org/lang_returning.html).
 - "The RETURNING clause is not a statement itself, but a clause that can optionally
   appear near the end of top-level DELETE, INSERT, and UPDATE statements. The effect of
   the RETURNING clause is to cause the statement to return one result row for each
@@ -772,7 +756,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   It is an extension. SQLite's syntax for RETURNING is modelled after PostgreSQL. The
   RETURNING syntax has been supported by SQLite since version 3.35.0 (2021-03-12)."
   Change log 3.35.0: "Add support for the RETURNING clause on DELETE, INSERT, and
-  UPDATE statements." =[SRC https://sqlite.org/changes.html]=
+  UPDATE statements." (https://sqlite.org/changes.html)
 - Diagram: =RETURNING { * | expr [AS column-alias] }, ...=.
 - Aliases: "Each expression may be optionally followed by an AS clause that determines
   the name of the result column. The special '*' expression expands into a list of all
@@ -798,7 +782,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   resolves to the rows, not to ={:changes ...}=.
 
 * 9. UPDATE ... FROM and DELETE
-** 9.1 UPDATE =[SRC https://sqlite.org/lang_update.html]=
+** 9.1 UPDATE (https://sqlite.org/lang_update.html)
 - Diagram: =[WITH [RECURSIVE] cte, ...] UPDATE [OR ABORT | OR FAIL | OR IGNORE | OR
   REPLACE | OR ROLLBACK] qualified-table-name SET { column-name | column-name-list } =
   expr, ... [FROM table-or-subquery, ... | join-clause] [WHERE expr] [returning-
@@ -818,8 +802,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   the target table." "If the join between the target table and the FROM clause results
   in multiple output rows for the same target table row, then only one of those output
   rows is used for updating the target table. The output row selected is arbitrary".
-  Change log 3.33.0: "Support for UPDATE FROM following the PostgreSQL syntax." =[SRC
-  https://sqlite.org/changes.html]= Within the floor; sql-cljs's =:update= + =:from=
+  Change log 3.33.0: "Support for UPDATE FROM following the PostgreSQL syntax." (https://sqlite.org/changes.html) Within the floor; sql-cljs's =:update= + =:from=
   renders the same text for both dialects.
 - No =DEFAULT= key word in =SET=: the right-hand side is =expr= and the expression
   grammar has no =DEFAULT= literal; sql-cljs's =:default= assignment (PG =SET a =
@@ -828,7 +811,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   =SQLITE_ENABLE_UPDATE_DELETE_LIMIT= (the consumer's driver is, 1.6); not in the
   surface.
 
-** 9.2 DELETE: no USING =[SRC https://sqlite.org/lang_delete.html]=
+** 9.2 DELETE: no USING (https://sqlite.org/lang_delete.html)
 - Diagram: =[WITH [RECURSIVE] cte, ...] DELETE FROM qualified-table-name [WHERE expr]
   [returning-clause]= (plus the =ORDER BY= / =LIMIT= extension when compiled in).
   =qualified-table-name= allows =AS alias=.
@@ -848,7 +831,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   faster." (section 11.)
 
 * 10. DDL
-** 10.1 CREATE TABLE =[SRC https://sqlite.org/lang_createtable.html]=
+** 10.1 CREATE TABLE (https://sqlite.org/lang_createtable.html)
 - Diagram: =CREATE [TEMP | TEMPORARY] TABLE [IF NOT EXISTS] [schema-name .] table-name
   { ( column-def, ... [, table-constraint, ...] ) [table-options] | AS select-stmt }=;
   =column-def= is =column-name [type-name] [column-constraint ...]=; =type-name= is
@@ -864,7 +847,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   clause }=; =foreign-key-clause= is =REFERENCES foreign-table [( column-name, ... )]
   [ON { DELETE | UPDATE } { SET NULL | SET DEFAULT | CASCADE | RESTRICT | NO ACTION } |
   MATCH name]... [[NOT] DEFERRABLE [INITIALLY DEFERRED | INITIALLY IMMEDIATE]]=.
-  =[SRC https://sqlite.org/lang_createtable.html]= (the same diagrams are reproduced on
+  (https://sqlite.org/lang_createtable.html) (the same diagrams are reproduced on
   the ALTER TABLE page.)
 - =IF NOT EXISTS=: "if the 'IF NOT EXISTS' clause is specified as part of the CREATE
   TABLE statement and a table or view of the same name already exists, the CREATE TABLE
@@ -882,11 +865,10 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
 - Foreign-key actions: "The ON DELETE and ON UPDATE action associated with each foreign
   key in an SQLite database is one of 'NO ACTION', 'RESTRICT', 'SET NULL', 'SET DEFAULT'
   or 'CASCADE'. If an action is not explicitly specified, it defaults to 'NO ACTION'."
-  =[SRC https://sqlite.org/foreignkeys.html#fk_actions]= The same five words as
+  (https://sqlite.org/foreignkeys.html#fk_actions) The same five words as
   PostgreSQL; sql-cljs's =:no-action :restrict :cascade :set-null :set-default= map
   unchanged. (Enforcement needs =PRAGMA foreign_keys=ON=; the consumer sets it per
-  connection and its driver compiles =SQLITE_DEFAULT_FOREIGN_KEYS=1=. =[CONSUMER
-  docs/sqlite-api-inventory.org section 2.8]=)
+  connection and its driver compiles =SQLITE_DEFAULT_FOREIGN_KEYS=1=. =(sqlite-cljs docs/sqlite-api-inventory.org section 2.8)=)
 - =DEFAULT=: "An explicit DEFAULT clause may specify that the default value is NULL, a
   string constant, a blob constant, a signed-number, or any constant expression enclosed
   in parentheses. A default value may also be one of the special case-independent
@@ -913,22 +895,20 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
 - =GENERATED ALWAYS AS=: "Generated columns are supported beginning with SQLite version
   3.31.0 (2020-01-22)." Not in the =0.1.0= surface (goes through =raw=, as in =0.1.0=).
 - Table options: =WITHOUT ROWID= and =STRICT= ("As of version 3.37.0 (2021-11-27),
-  SQLite provides STRICT tables that do rigid type enforcement." =[SRC
-  https://sqlite.org/datatype3.html]=). In a STRICT table "The datatype must be one of
-  the following: INT, INTEGER, REAL, TEXT, BLOB, ANY" =[SRC
-  https://sqlite.org/stricttables.html]=. Not in the =0.1.0= surface; recorded because
+  SQLite provides STRICT tables that do rigid type enforcement." (https://sqlite.org/datatype3.html)). In a STRICT table "The datatype must be one of
+  the following: INT, INTEGER, REAL, TEXT, BLOB, ANY" (https://sqlite.org/stricttables.html). Not in the =0.1.0= surface; recorded because
   the consumer's own DDL defaults to =STRICT= and would reject the type spellings of
   10.2 (the consumer's =strict-types= set is =#{:integer :int :real :text :blob :any}=).
-  =[CONSUMER src/sqlite_cljs/ddl.cljs lines 64-70]= A sql-cljs =CREATE TABLE= is never
+  =(sqlite-cljs src/sqlite_cljs/ddl.cljs lines 64-70)= A sql-cljs =CREATE TABLE= is never
   STRICT unless the caller adds the option through =raw=, so affinity (10.2) applies.
 - "A table created using CREATE TABLE AS has no PRIMARY KEY and no constraints of any
   kind." (not in the surface.)
 
-** 10.2 Type names and affinity =[SRC https://sqlite.org/datatype3.html]=
+** 10.2 Type names and affinity (https://sqlite.org/datatype3.html)
 - "Unlike most SQL databases, SQLite does not restrict the type of data that may be
   inserted into a column based on the columns declared type. Instead, SQLite uses
   dynamic typing. The declared type of a column is used to determine the affinity of the
-  column only." =[SRC https://sqlite.org/lang_createtable.html#column_data_types]=
+  column only." (https://sqlite.org/lang_createtable.html#column_data_types)
 - Storage classes: NULL, INTEGER, REAL, TEXT, BLOB.
 - Affinity rules ("For tables not declared as STRICT, the affinity of a column is
   determined by the declared type of the column, according to the following rules in the
@@ -995,7 +975,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   with integer affinity and a unique index, not as an alias for the rowid." "The
   exception mentioned above is that if the declaration of a column with declared type
   'INTEGER' includes an 'PRIMARY KEY DESC' clause, it does not become an alias for the
-  rowid". =[SRC https://sqlite.org/lang_createtable.html#rowid]=
+  rowid". (https://sqlite.org/lang_createtable.html#rowid)
 - Auto-assignment WITHOUT the key word: "On an INSERT, if the ROWID or INTEGER PRIMARY
   KEY column is not explicitly given a value, then it will be filled automatically with
   an unused integer, usually one more than the largest ROWID currently in use. This is
@@ -1003,7 +983,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   algorithm is to give the newly created row a ROWID that is one larger than the largest
   ROWID in the table prior to the insert." "If you ever delete rows or if you ever
   create a row with the maximum possible ROWID, then ROWIDs from previously deleted
-  rows might be reused when creating new rows". =[SRC https://sqlite.org/autoinc.html]=
+  rows might be reused when creating new rows". (https://sqlite.org/autoinc.html)
 - What AUTOINCREMENT adds: "If the AUTOINCREMENT keyword appears after INTEGER PRIMARY
   KEY, that changes the automatic ROWID assignment algorithm to prevent the reuse of
   ROWIDs over the lifetime of the database. In other words, the purpose of AUTOINCREMENT
@@ -1013,16 +993,14 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   attempt to insert a new row will fail with an SQLITE_FULL error." "AUTOINCREMENT is
   not allowed on WITHOUT ROWID tables or on any table column other than INTEGER PRIMARY
   KEY. Any attempt to use AUTOINCREMENT on a WITHOUT ROWID table or on a column other
-  than the INTEGER PRIMARY KEY column results in an error." =[SRC
-  https://sqlite.org/autoinc.html]=
+  than the INTEGER PRIMARY KEY column results in an error." (https://sqlite.org/autoinc.html)
 - The page's own recommendation: "The AUTOINCREMENT keyword imposes extra CPU, memory,
   disk space, and disk I/O overhead and should be avoided if not strictly needed. It is
-  usually not needed." =[SRC https://sqlite.org/autoinc.html]= The quirks page: "The
-  AUTOINCREMENT feature in SQLite works differently than it does in MySQL." =[SRC
-  https://sqlite.org/quirks.html#autoinc]=
+  usually not needed." (https://sqlite.org/autoinc.html) The quirks page: "The
+  AUTOINCREMENT feature in SQLite works differently than it does in MySQL." (https://sqlite.org/quirks.html#autoinc)
 - Grammar position: =PRIMARY KEY [ASC | DESC] [conflict-clause] [AUTOINCREMENT]= in the
   column constraint, i.e. =id INTEGER PRIMARY KEY AUTOINCREMENT= (the key word follows
-  =PRIMARY KEY=, never the type). =[SRC https://sqlite.org/lang_createtable.html]=
+  =PRIMARY KEY=, never the type). (https://sqlite.org/lang_createtable.html)
 - =SERIAL= / =IDENTITY= do not occur on the CREATE TABLE page (grep count 0 for each).
 - The SERIAL mapping, pinned from the facts above (DECISION POINT 13.12 chooses between
   the renderings; the facts are not in doubt):
@@ -1038,13 +1016,13 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
     without =:primary-key=, or two =:serial= columns, has NO faithful SQLite rendering.
   - Rendering =SERIAL= literally is accepted by the parser and silently yields a NUMERIC
     column with no auto-assignment and NULL allowed (10.2): the worst outcome, a silent
-    semantics change, which the house rule "fail loudly, never silently degrade" forbids.
+    semantics change, which the rule "fail loudly, never silently degrade" forbids.
   - The consumer's own DDL offers =:autoincrement?= "only INTEGER PRIMARY KEY, avoided
     per sqlite.org unless requested" and its house position 7.2 recommends plain
-    =INTEGER PRIMARY KEY=. =[CONSUMER src/sqlite_cljs/ddl.cljs lines 38-40;
-    docs/sqlite-api-inventory.org section 7.2]=
+    =INTEGER PRIMARY KEY=. =(sqlite-cljs src/sqlite_cljs/ddl.cljs lines 38-40;
+    docs/sqlite-api-inventory.org section 7.2)=
 
-** 10.4 ALTER TABLE =[SRC https://sqlite.org/lang_altertable.html]=
+** 10.4 ALTER TABLE (https://sqlite.org/lang_altertable.html)
 - "SQLite supports a limited subset of ALTER TABLE. The ALTER TABLE command in SQLite
   allows these alterations of an existing table: it can be renamed; a column can be
   renamed; a column can be added to it; or a column can be dropped from it." (The 3.53.0
@@ -1066,7 +1044,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   column. If the column name change would result in a semantic ambiguity in a trigger or
   view, then the RENAME COLUMN fails with an error and no changes are applied." Version:
   3.25.0 (2018-09-15) "Add support for renaming columns within a table using ALTER TABLE
-  table RENAME COLUMN oldname TO newname." =[SRC https://sqlite.org/changes.html]=
+  table RENAME COLUMN oldname TO newname." (https://sqlite.org/changes.html)
 - =ADD COLUMN=: "The new column is always appended to the end of the list of existing
   columns. ... The new column may take any of the forms permissible in a CREATE TABLE
   statement, with the following restrictions:"
@@ -1094,11 +1072,11 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   constraint not associated with the column being dropped. The column is used in a
   foreign key constraint. The column is used in the expression of a generated column.
   The column appears in a trigger or view." Version: 3.35.0 (2021-03-12) "Added support
-  for ALTER TABLE DROP COLUMN." =[SRC https://sqlite.org/changes.html]=
+  for ALTER TABLE DROP COLUMN." (https://sqlite.org/changes.html)
 - =ALTER COLUMN=: "The ability to set or drop NOT NULL constraints from a column using
   the ALTER TABLE ALTER COLUMN syntax was added in SQLite 3.53.0 (2026-04-09)." Change
   log 3.53.0: "Enhance ALTER TABLE to permit adding and removing NOT NULL and CHECK
-  constraints." =[SRC https://sqlite.org/changes.html]= (=ADD CHECK= / =DROP
+  constraints." (https://sqlite.org/changes.html) (=ADD CHECK= / =DROP
   CONSTRAINT= are in the diagram; =ADD CONSTRAINT= as a general clause does not occur
   on the page, grep count 0.) Not in the =0.1.0= surface; recorded.
 - Everything else: "8. Making Other Kinds Of Table Schema Changes" — "The steps to make
@@ -1115,7 +1093,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   spelling; several actions in one =:actions= vector → no spelling (one statement each).
 
 ** 10.5 CREATE INDEX and DROP INDEX
-- =[SRC https://sqlite.org/lang_createindex.html]= Diagram: =CREATE [UNIQUE] INDEX [IF
+- (https://sqlite.org/lang_createindex.html) Diagram: =CREATE [UNIQUE] INDEX [IF
   NOT EXISTS] [schema-name .] index-name ON table-name ( indexed-column, ... ) [WHERE
   expr]=; =indexed-column= is ={ column-name | expr } [COLLATE collation-name] [ASC |
   DESC]=. The index name is mandatory (no unnamed form). =USING= does not occur on the
@@ -1142,16 +1120,15 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   always appear at the beginning of an ASC index and at the end of a DESC index." So
   sql-cljs's =[:b :desc :nulls-last]= index column has no SQLite spelling (13.14).
 - Partial index predicate: "The WHERE clause may not contain subqueries, references to
-  other tables, non-deterministic functions, or bound parameters." =[SRC
-  https://sqlite.org/partialindex.html]= (sql-cljs inlines it already.)
-- =[SRC https://sqlite.org/lang_dropindex.html]= Diagram: =DROP INDEX [IF EXISTS]
+  other tables, non-deterministic functions, or bound parameters." (https://sqlite.org/partialindex.html) (sql-cljs inlines it already.)
+- (https://sqlite.org/lang_dropindex.html) Diagram: =DROP INDEX [IF EXISTS]
   [schema-name .] index-name= (ONE name; no =CASCADE= / =RESTRICT= / =CONCURRENTLY=,
   grep count 0 for =CASCADE=). "The DROP INDEX statement removes an index added with the
   CREATE INDEX statement. The index is completely removed from the disk. The only way to
   recover the index is to reenter the appropriate CREATE INDEX command."
 
 ** 10.6 CREATE VIEW and DROP VIEW
-- =[SRC https://sqlite.org/lang_createview.html]= Diagram: =CREATE [TEMP | TEMPORARY]
+- (https://sqlite.org/lang_createview.html) Diagram: =CREATE [TEMP | TEMPORARY]
   VIEW [IF NOT EXISTS] [schema-name .] view-name [( column-name, ... )] AS
   select-stmt=. =OR REPLACE= does not occur on the page (grep count 0; nor on the CREATE
   INDEX or CREATE TABLE pages): PostgreSQL's =CREATE OR REPLACE VIEW= has no SQLite
@@ -1170,9 +1147,8 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   =VIEW v (a, b) AS SELECT ...= is grammatical and within the floor.
 - The view body is a =select-stmt= (so a compound select is fine; a =WITH= inside it is
   fine as it begins a select-stmt). The consumer observed that a bound parameter in a
-  view body is "parameters prohibited in views" (its =[LOCAL]=). =[CONSUMER
-  docs/sqlite-api-inventory.org section 3.11]=
-- =[SRC https://sqlite.org/lang_dropview.html]= Diagram: =DROP VIEW [IF EXISTS]
+  view body is "parameters prohibited in views" (its =(local)=). =(sqlite-cljs docs/sqlite-api-inventory.org section 3.11)=
+- (https://sqlite.org/lang_dropview.html) Diagram: =DROP VIEW [IF EXISTS]
   [schema-name .] view-name= (ONE name; =CASCADE= grep count 0). "The DROP VIEW statement
   removes a view created by the CREATE VIEW statement. The view definition is removed
   from the database schema, but no actual data in the underlying base tables is
@@ -1180,7 +1156,7 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   present, it is an error. If the specified view cannot be found and an IF EXISTS clause
   is present in the DROP VIEW statement, then the statement is a no-op."
 
-** 10.7 DROP TABLE =[SRC https://sqlite.org/lang_droptable.html]=
+** 10.7 DROP TABLE (https://sqlite.org/lang_droptable.html)
 - Diagram: =DROP TABLE [IF EXISTS] [schema-name .] table-name= (ONE name; =CASCADE= /
   =RESTRICT= grep count 0). PostgreSQL's =DROP TABLE t, u= and =DROP TABLE t CASCADE=
   have no SQLite spelling (13.15).
@@ -1202,30 +1178,28 @@ Page: =[SRC https://sqlite.org/lang_returning.html]=.
   DROP INDEX/TABLE/TRIGGER/VIEW, EXPLAIN, INSERT, ON CONFLICT clause, PRAGMA, REINDEX,
   RELEASE SAVEPOINT, REPLACE, RETURNING clause, SAVEPOINT, SELECT, UPDATE, UPSERT,
   VACUUM, WITH clause, plus the function and expression pages). Neither does =MERGE=.
-  =[SRC https://sqlite.org/lang.html]= The only "truncate" on sqlite.org's grammar pages
+  (https://sqlite.org/lang.html) The only "truncate" on sqlite.org's grammar pages
   is the DELETE page's "truncate optimization" (9.2), which is the engine's internal
-  fast path for =DELETE FROM t= with no =WHERE= / =RETURNING= / triggers. =[SRC
-  https://sqlite.org/lang_delete.html#truncateopt]=
+  fast path for =DELETE FROM t= with no =WHERE= / =RETURNING= / triggers. (https://sqlite.org/lang_delete.html#truncateopt)
 - Consequence (13.16): =:truncate= must be a format error under =:sqlite=; the
   statement does not exist.
 - Caller knowledge only (the library chooses nothing): the SQLite idiom for
   PostgreSQL's =TRUNCATE t= is =DELETE FROM t= (which takes the truncate optimization),
   and for =TRUNCATE t RESTART IDENTITY= on a table with =AUTOINCREMENT= it is =DELETE
   FROM t= followed by =DELETE FROM sqlite_sequence WHERE name = 't'= (the =sqlite_
-  sequence= table holds "the largest ROWID" per AUTOINCREMENT table, 10.3). =[SRC
-  https://sqlite.org/autoinc.html]= Both are ordinary statements the caller can write
+  sequence= table holds "the largest ROWID" per AUTOINCREMENT table, 10.3). (https://sqlite.org/autoinc.html) Both are ordinary statements the caller can write
   with sql-cljs (=:delete-from=) in two =execute!= calls; a table without
   =AUTOINCREMENT= has no sequence row to reset.
 
 * 12. Limits and other caller-visible differences
-Page: =[SRC https://sqlite.org/limits.html]= unless tagged otherwise.
+Page: (https://sqlite.org/limits.html) unless tagged otherwise.
 | Limit | Default | Consequence |
 |-------+---------+-------------|
 | =SQLITE_MAX_VARIABLE_NUMBER= | 32766 ("32766 for SQLite versions after 3.32.0"; the consumer pins the same, 1.5) | placeholders per statement; sql-cljs does not chunk; a multi-row =INSERT= must keep rows × columns (+ other values) ≤ 32766 or the consumer's =->params= rejects it before the driver |
 | =SQLITE_MAX_SQL_LENGTH= | "defaults to 1,000,000,000" bytes | statement text; not a concern |
 | =SQLITE_MAX_COLUMN= | "The default setting for SQLITE_MAX_COLUMN is 2000." | columns per table / select list / index / =UPDATE SET= / =INSERT= row |
 | =SQLITE_MAX_COMPOUND_SELECT= | "defaults to 500" | =UNION= terms |
-| =SQLITE_MAX_EXPR_DEPTH= | 1000 (the consumer observed a 32766-term =? + ? + ...= chain fail with "Expression tree is too large"; sql-cljs's n-ary =:and= / =:or= are flat, nested operator expressions are the caller's depth) =[CONSUMER docs/sqlite-api-inventory.org section 5.9]= | deep nesting |
+| =SQLITE_MAX_EXPR_DEPTH= | 1000 (the consumer observed a 32766-term =? + ? + ...= chain fail with "Expression tree is too large"; sql-cljs's n-ary =:and= / =:or= are flat, nested operator expressions are the caller's depth) =(sqlite-cljs docs/sqlite-api-inventory.org section 5.9)= | deep nesting |
 Other differences the =0.1.0= surface meets (each detailed in its section):
 - =OFFSET= only inside =LIMIT= (4.5); no =LIMIT ALL= (4.5); negative =LIMIT= means no
   bound (4.5).
@@ -1255,11 +1229,11 @@ Other differences the =0.1.0= surface meets (each detailed in its section):
   is rejected by the driver ("more than one statement", mapped to =:reason
   :multiple-statements=). sql-cljs never emits more than one statement, so the one-
   action-per-ALTER rule cannot be met by joining statements with =;= inside =:text=.
-  =[CONSUMER core.cljs lines 95-100; docs/sqlite-api-inventory.org section 6.3.2]=
+  =(sqlite-cljs core.cljs lines 95-100; docs/sqlite-api-inventory.org section 6.3.2)=
 
 * 13. Consequences for the :sqlite dialect (decision points, not decisions)
-Each item names the grammar facts it rests on and the candidate behaviors the Phase 1
-brief must choose between. "Reject" means a =:sql-cljs/format-error= with =:op= and
+Each item names the grammar facts it rests on and the candidate behaviors the dialect
+implementation must choose between. "Reject" means a =:sql-cljs/format-error= with =:op= and
 =:arg= raised before any text is produced, as in =0.1.0=.
 
 ** 13.1 Placeholders (2, 1.3)
@@ -1382,7 +1356,7 @@ under =:sqlite= (CTE bodies are =select-stmt=).
 
 ** 13.18 Output text
 Unchanged conventions: upper-case key words, single spaces, no trailing semicolon, one
-statement per =format=. The =:sqlite= strings are pinned by Phase 1 tests next to the
+statement per =format=. The =:sqlite= strings are pinned by tests next to the
 PostgreSQL ones. [ADDED 2026-10-16 from the implementation] Every nested operator
 operand stays parenthesized under =:sqlite= (=(a = ?) AND (b IN (?, ?))=, =NOT (c IS
 NULL)=); only compound-select operands lose their parentheses (13.5).
@@ -1396,8 +1370,8 @@ NULL)=); only compound-select operands lose their parentheses (13.5).
 | 14.4 | *Parenthesized compound operands.* The grammar admits only =select-core= operands (4.1, 4.6); whether SQLite's parser rejects =(SELECT 1) UNION (SELECT 2)= with a syntax error or accepts it leniently was not run. Either way 13.5 renders without parentheses; the uncertainty only affects how loudly the =0.1.0= PostgreSQL form would fail if a caller sent it to SQLite. | Hand-run =SELECT 1 UNION SELECT 2= (expected ok) and =(SELECT 1) UNION (SELECT 2)= (expected error) through sqlite-cljs; record the result in 4.6. |
 | 14.5 | *Type names not in the examples table*: =TIMESTAMP WITH TIME ZONE=, =TIMESTAMPTZ=, =SERIAL= are accepted by the =type-name= grammar reading (10.2) but were not parsed live. | Hand-run =CREATE TABLE t(a TIMESTAMP WITH TIME ZONE, b TIMESTAMPTZ, c SERIAL)= and =PRAGMA table_info(t)= (reports the declared type and affinity-relevant text). Corrects the 10.2 table. |
 | 14.6 | *=INSERT INTO t AS alias=* is in the diagram (7.1) but no prose or version note describes it; whether 3.53.4 accepts the alias in a plain (non-upsert) insert was not run. | Hand-run =INSERT INTO t AS x (a) VALUES (1)=. If rejected, =:insert-into [:t :alias]= → reject under =:sqlite=. |
-| 14.7 | *=DO UPDATE= without a conflict target* is documented as allowed since 3.35.0 (7.2) but is a PostgreSQL error; the dialect decision (13.10) is open. | Phase 1 brief decides; no live check needed for the grammar fact. |
+| 14.7 | *=DO UPDATE= without a conflict target* is documented as allowed since 3.35.0 (7.2) but is a PostgreSQL error; the dialect decision (13.10) is open. | The dialect implementation decides; no live check needed for the grammar fact. |
 | 14.8 | *Parameters in =CHECK= constraints*: the =DEFAULT= rule names bound parameters as non-constant (10.1) and the consumer observed =DEFAULT ?= failing, but no official sentence covers =CHECK ( ? )=. sql-cljs inlines all DDL literals, so the question never reaches the engine. | None needed unless the inlining rule changes; recorded for completeness. |
-| 14.9 | *=NOW()=.* The PostgreSQL manual's =[:now]= example renders =NOW()=, which is not a SQLite function (10.1). Whether to add =:current-timestamp= bare key-word spellings to the expression grammar (13.11) was a Phase 1 scope question. [CORRECTED 2026-10-16 from the implementation] Settled: under =:sqlite= the zero-argument =[:current-timestamp]= / =[:current-date]= / =[:current-time]= render the bare key words; under =:pg= they are rejected by the identifier rule as they always were (=0.1.0= never rendered =CURRENT_TIMESTAMP()= for them, contrary to what 13.11 first said; the underscore =[:current_timestamp]= is a plain call in both). =[:now]= still renders =NOW()= in both dialects; a SQLite default is written =[:default [:current-timestamp]]=. | Closed by the implementation; the date/time function page remains uninventoried (no further function is spelled by the dialect). |
-| 14.10 | *Driver behavior on =?NNN=*: the consumer's inventory reports (its =[LOCAL]=) that better-sqlite3 throws on =?NNN=; irrelevant to a =?=-only dialect but recorded because the SQLite grammar allows it (2). | No action; the dialect never emits =?NNN=. |
-| 14.11 | *No live verification happened in Phase 0* (sql-cljs has no smoke build by design; sqlite-cljs was read-only under a parallel job). Every "legal / illegal" claim above rests on the documentation and the bundled source. | The owner's hand-run composition of sqlite-cljs with sql-cljs (one in-memory database, the README's statements, one DDL round-trip) after Phase 1; findings correct this inventory IN PLACE. |
+| 14.9 | *=NOW()=.* The PostgreSQL manual's =[:now]= example renders =NOW()=, which is not a SQLite function (10.1). Whether to add =:current-timestamp= bare key-word spellings to the expression grammar (13.11) was a scope question. [CORRECTED 2026-10-16 from the implementation] Settled: under =:sqlite= the zero-argument =[:current-timestamp]= / =[:current-date]= / =[:current-time]= render the bare key words; under =:pg= they are rejected by the identifier rule as they always were (=0.1.0= never rendered =CURRENT_TIMESTAMP()= for them, contrary to what 13.11 first said; the underscore =[:current_timestamp]= is a plain call in both). =[:now]= still renders =NOW()= in both dialects; a SQLite default is written =[:default [:current-timestamp]]=. | Closed by the implementation; the date/time function page remains uninventoried (no further function is spelled by the dialect). |
+| 14.10 | *Driver behavior on =?NNN=*: the consumer's inventory reports (its =(local)=) that better-sqlite3 throws on =?NNN=; irrelevant to a =?=-only dialect but recorded because the SQLite grammar allows it (2). | No action; the dialect never emits =?NNN=. |
+| 14.11 | *Not live-verified* (sql-cljs has no smoke build by design; sqlite-cljs was treated as read-only). Every "legal / illegal" claim above rests on the documentation and the bundled source. | A hand-run composition of sqlite-cljs with sql-cljs (one in-memory database, the README's statements, one DDL round-trip); findings correct this inventory IN PLACE. |
